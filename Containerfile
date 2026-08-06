@@ -15,8 +15,9 @@ RUN curl -sfL https://k3s.io -o /usr/local/bin/k3s-installer.sh \
     && chmod +x /usr/local/bin/k3s-installer.sh
 
 # 3. Install the KubeVirt management client binary (virtctl)
-RUN KUBEVIRT_VERSION=$(curl -s https://github.com | grep tag_name | cut -d '"' -f 4) \
-    && curl -LO "https://github.com{KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
+RUN KUBEVIRT_VERSION=$(curl -s https://storage.googleapis.com/kubevirt-prow/release/kubevirt/kubevirt/stable.txt) \
+    && echo "Gevonden stabiele KubeVirt versie: ${KUBEVIRT_VERSION}" \
+    && curl -LO "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
     && chmod +x "virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
     && mv "virtctl-${KUBEVIRT_VERSION}-linux-amd64" /usr/local/bin/virtctl
 
