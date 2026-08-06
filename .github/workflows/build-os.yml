@@ -1,4 +1,4 @@
-name: Build and Push Custom Zirconium OS
+name: Build and Push Custom Kubevirt OS
 
 on:
   push:
