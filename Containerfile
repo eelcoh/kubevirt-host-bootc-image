@@ -1,4 +1,4 @@
-FROM quay.io/fedora/fedora-bootc:40
+FROM quay.io/fedora/fedora-bootc:44
 
 # 1. Install KVM, hardware virtualization tools, and system utility packages
 RUN dnf -y install \
@@ -15,10 +15,10 @@ RUN curl -sfL https://k3s.io -o /usr/local/bin/k3s-installer.sh \
     && chmod +x /usr/local/bin/k3s-installer.sh
 
 # 3. Install the KubeVirt management client binary (virtctl)
-RUN export KUBEVIRT_VERSION=\$(curl -s https://github.com | grep tag_name | cut -d '"' -f 4) \
-    && curl -LO "https://github.com\({KUBEVIRT_VERSION}/virtctl-\){KUBEVIRT_VERSION}-linux-amd64" \
-    && chmod +x "virtctl-\${KUBEVIRT_VERSION}-linux-amd64" \
-    && mv "virtctl-\${KUBEVIRT_VERSION}-linux-amd64" /usr/local/bin/virtctl
+RUN KUBEVIRT_VERSION=$(curl -s https://github.com | grep tag_name | cut -d '"' -f 4) \
+    && curl -LO "https://github.com{KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
+    && chmod +x "virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
+    && mv "virtctl-${KUBEVIRT_VERSION}-linux-amd64" /usr/local/bin/virtctl
 
 # 4. Inject the automated initialization script
 RUN mkdir -p /usr/local/bin
@@ -43,13 +43,13 @@ until kubectl get nodes; do
 done
 
 # Grab latest release tag version
-KUBEVIRT_VERSION=\$(curl -s https://github.com | grep tag_name | cut -d '"' -f 4)
+KUBEVIRT_VERSION=$(curl -s https://github.com | grep tag_name | cut -d '"' -f 4)
 
 # Deploy the operator and resources if missing
 if ! kubectl get namespace kubevirt >/dev/null 2>&1; then
-    echo "Deploying KubeVirt Operator version \${KUBEVIRT_VERSION}..."
-    kubectl create -f "https://github.com\${KUBEVIRT_VERSION}/kubevirt-operator.yaml"
-    kubectl create -f "https://github.com\${KUBEVIRT_VERSION}/kubevirt-cr.yaml"
+    echo "Deploying KubeVirt Operator version ${KUBEVIRT_VERSION}..."
+    kubectl create -f "https://github.com{KUBEVIRT_VERSION}/kubevirt-operator.yaml"
+    kubectl create -f "https://github.com{KUBEVIRT_VERSION}/kubevirt-cr.yaml"
 fi
 
 echo "Appliance Initialization Complete!"
