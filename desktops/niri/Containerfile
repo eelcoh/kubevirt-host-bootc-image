@@ -1,0 +1,74 @@
+ARG BASE_IMAGE=ghcr.io/eelcoh/kubevirt-host-bootc-image/base:latest
+FROM ${BASE_IMAGE}
+
+# 1. Desktop: Niri (scrollable-tiling Wayland compositor) + DankMaterialShell
+# (DMS, a Quickshell-based shell that replaces the usual pile of bar/
+# launcher/lock/notification daemons) — deliberately not GNOME/KDE/etc. All
+# of niri, quickshell and DankMaterialShell are plain Fedora 44 packages, no
+# COPR required (verified directly: `dnf search`/`dnf info` against this
+# base pulls them straight from the `fedora`/`updates` repos).
+#
+# - xdg-desktop-portal-gtk / -gnome + gnome-keyring + polkit-kde: niri's own
+#   upstream guidance (github.com/niri-wm/niri wiki, "Important Software")
+#   for portals (file chooser + screencast), secrets, and a polkit
+#   authentication agent. polkit-kde despite the name is a ~300KB standalone
+#   agent, not KDE/Plasma itself.
+# - alacritty: matches the terminal niri's own default-config.kdl binds to
+#   Mod+T out of the box, so the default keybind works unmodified.
+# - greetd: a generic greeter daemon; wired up to DMS's own bundled greeter
+#   in step 2, rather than a GNOME/KDE display manager.
+RUN dnf -y install \
+    niri \
+    DankMaterialShell \
+    alacritty \
+    xdg-desktop-portal \
+    xdg-desktop-portal-gtk \
+    xdg-desktop-portal-gnome \
+    gnome-keyring \
+    polkit-kde \
+    greetd \
+    pipewire \
+    pipewire-pulseaudio \
+    pipewire-alsa \
+    wireplumber \
+    google-noto-sans-fonts \
+    google-noto-emoji-fonts \
+    && dnf clean all
+
+# 2. Wire up login and first-user-session autostart, then enable everything
+# that should come up automatically.
+#
+# DankMaterialShell ships its own greetd-native greeter (the "dms-greeter"
+# script + matching niri/greetd config templates) under
+# /usr/share/quickshell/dms/Modules/Greetd/, but — unlike Arch/openSUSE/
+# Debian — Fedora doesn't yet package a separate `dms-greeter` RPM that does
+# this wiring automatically. This replicates DMS upstream's own documented
+# manual-install steps for that case (see DankMaterialShell's
+# Modules/Greetd/README.md "Manual (fallback only)" section) rather than
+# inventing a new install path: create the greeter system user, seed its
+# cache dir with the ownership/mode DMS's own tmpfiles rule uses
+# (/usr/share/quickshell/dms/systemd/tmpfiles-dms-greeter.conf), install the
+# dms-greeter wrapper, and point greetd's config.toml at it.
+#
+# For a real (non-greeter) login, DMS ships a proper systemd --user unit
+# (dms.service, WantedBy=graphical-session.target) that niri.service already
+# reaches on login — `--global` enables it for every user account up front,
+# no per-user `systemctl --user enable` step needed after first login.
+RUN groupadd -r greeter \
+    && useradd -r -g greeter -d /var/lib/greeter -s /bin/bash -c "System Greeter" greeter \
+    && mkdir -p /var/lib/greeter /var/cache/dms-greeter \
+    && chown greeter:greeter /var/lib/greeter /var/cache/dms-greeter \
+    && chmod 750 /var/cache/dms-greeter \
+    && install -m 0755 /usr/share/quickshell/dms/Modules/Greetd/assets/dms-greeter /usr/local/bin/dms-greeter
+
+COPY <<-'EOF' /etc/greetd/config.toml
+[terminal]
+vt = 1
+
+[default_session]
+user = "greeter"
+command = "/usr/local/bin/dms-greeter --command niri"
+EOF
+
+RUN systemctl --global enable dms.service \
+    && systemctl enable greetd.service

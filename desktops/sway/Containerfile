@@ -1,0 +1,62 @@
+ARG BASE_IMAGE=ghcr.io/eelcoh/kubevirt-host-bootc-image/base:latest
+FROM ${BASE_IMAGE}
+
+# 1. Desktop: Sway, an i3-compatible tiling Wayland compositor built on
+# wlroots. All plain Fedora 44 packages, no COPR (verified: `dnf search`/
+# `dnf group info swaywm-extended` against this base).
+#
+# - sway-config-fedora: Fedora's own stock default keybinds/config for Sway
+#   (part of the Fedora Sway Spin's own package set).
+# - waybar: Sway has no built-in status bar (unlike niri+DMS), so one is
+#   installed explicitly.
+# - swaybg / swaylock / swayidle: wallpaper, screen lock, and idle daemon —
+#   the standard companion trio for a Sway session.
+# - alacritty: same terminal used by the other desktop flavors, for
+#   consistency.
+# - xdg-desktop-portal-wlr: screen capture/sharing portal backend for
+#   wlroots-based compositors — Sway is genuinely wlroots-based (unlike
+#   niri, which uses its own portal implementation), so this is the correct
+#   backend here.
+# - xdg-desktop-portal-gtk + gnome-keyring + polkit-kde: file chooser,
+#   secrets, and a standalone polkit authentication agent — same rationale
+#   as the niri flavor.
+# - greetd + tuigreet: a generic greeter daemon with a console/TUI login
+#   front-end.
+RUN dnf -y install \
+    sway \
+    sway-config-fedora \
+    waybar \
+    swaybg \
+    swaylock \
+    swayidle \
+    alacritty \
+    xdg-desktop-portal \
+    xdg-desktop-portal-wlr \
+    xdg-desktop-portal-gtk \
+    gnome-keyring \
+    polkit-kde \
+    greetd \
+    tuigreet \
+    pipewire \
+    pipewire-pulseaudio \
+    pipewire-alsa \
+    wireplumber \
+    google-noto-sans-fonts \
+    google-noto-emoji-fonts \
+    && dnf clean all
+
+# 2. Wire up login. Unlike the niri/DMS flavor, no manual system user needs
+# to be created here: Fedora's `greetd` package already ships a sysusers.d
+# entry that creates a `greetd` system user (home /var/lib/greetd) — verified
+# directly from the RPM — so tuigreet (the greeter front-end) just runs as
+# that existing account.
+COPY <<-'EOF' /etc/greetd/config.toml
+[terminal]
+vt = 1
+
+[default_session]
+command = "tuigreet --cmd sway"
+user = "greetd"
+EOF
+
+RUN systemctl enable greetd.service

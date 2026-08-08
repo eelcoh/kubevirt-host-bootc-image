@@ -1,0 +1,56 @@
+FROM quay.io/fedora/fedora-bootc:44
+# FROM ghcr.io/zirconium-dev/zirconium:latest
+# FROM quay.io/hummingbird-community/bootc-os:latest
+
+# This builds directly on plain fedora-bootc instead of the zirconium base
+# used previously (kept above, commented, for reference/rollback).
+# fedora-bootc:44 is already minimal (541 packages, no GNOME/desktop of any
+# kind, ~2GB) — it's the same base Silverblue/Kinoite/etc. layer their
+# desktops onto, so every package added by this image family is explicit, not
+# inherited. Verified by pulling and inspecting the image directly (`rpm
+# -qa`, `ls /usr/local`, etc.) rather than assuming from docs. Notably
+# /usr/local is a real directory here (not an ostree-style symlink into
+# /var/usrlocal like some bases use), so unlike the earlier zirconium-based
+# attempt, no INSTALL_K3S_BIN_DIR workaround is needed for K3s/virtctl to
+# land where they normally would.
+#
+# quay.io/hummingbird-community/bootc-os (Fedora Hummingbird) was also
+# evaluated as an even-smaller base and rejected: it ships only 266 packages
+# from its own curated repo (no qemu-kvm/libvirt/niri/etc at all), and
+# layering Fedora Rawhide on top to fill the gap currently fails outright —
+# Rawhide has moved to OpenSSL 4.0 while Hummingbird pins patched OpenSSL
+# 3.5.6 builds, so core libs can't be resolved together. Its own image
+# description calls it "experimental," not meant as a general extensible
+# base the way fedora-bootc is.
+
+# 1. Boot headless (console) by default. Flavors that add a desktop bring it
+# up on demand with `systemctl start graphical.target` (or `systemctl
+# set-default graphical.target` to persist).
+RUN systemctl set-default multi-user.target
+
+# 2. Install KVM, hardware virtualization tools, and system utility packages.
+# This lives in the base image (not just the kubevirt flavor) so every flavor
+# built on top of it — desktop or not — has host virtualization capability
+# available for free.
+RUN dnf -y install \
+    qemu-kvm \
+    libvirt \
+    virt-install \
+    util-linux \
+    iptables \
+    iscsi-initiator-utils \
+    && dnf clean all
+
+#
+# systemd-remount-fs.service is masked because it fails on every boot on
+# this composefs-based root (`fsconfig() failed: overlay: No changes
+# allowed in reconfigure` — the unit tries to reconfigure `/etc/fstab`
+# mount options onto the overlayfs root, which overlayfs doesn't support).
+# This is a known upstream issue on ostree/bootc composefs roots in general
+# (see fedora-silverblue/issue-tracker#605, bootc-dev/bootc#971), not
+# specific to any one flavor built on top of this base. The unit is `static`
+# (no [Install] section), so it isn't started via a `.wants/` symlink
+# `disable` could remove — masking is the only way to actually stop it
+# running.
+RUN systemctl mask systemd-remount-fs.service \
+    && systemctl enable sshd.service
