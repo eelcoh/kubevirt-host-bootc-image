@@ -3,8 +3,12 @@
 A [bootc](https://containers.github.io/bootc/) (bootable container) image that
 turns a bare-metal or VM host into a single-box KubeVirt appliance: K3s as the
 Kubernetes control plane, KubeVirt for running VMs, KVM/libvirt for hardware
-virtualization. Everything is baked into the image at build time — the box
-needs no network access on first boot to come up with a working cluster.
+virtualization, and a [Niri](https://github.com/niri-wm/niri) +
+[DankMaterialShell](https://danklinux.com/docs/dankmaterialshell/installation)
+desktop available on demand (no GNOME/KDE). Everything is baked into the
+image at build time — the box needs no network access on first boot to come
+up with a working cluster, and SSH (`sshd.service`) is enabled out of the
+box.
 
 See [`CLAUDE.md`](CLAUDE.md) for how the `Containerfile` itself is organized.
 This document is about *using* the appliance once it's installed.
@@ -23,7 +27,7 @@ Published image: `ghcr.io/eelcoh/kubevirt-host-bootc-image:latest`
 ### Onto an existing bootc/Fedora system
 
 If the target machine is already running a bootc-based OS (e.g. plain
-`fedora-bootc`, or zirconium itself), rebase it onto this image and reboot:
+`fedora-bootc`), rebase it onto this image and reboot:
 
 ```sh
 sudo bootc switch ghcr.io/eelcoh/kubevirt-host-bootc-image:latest
@@ -32,12 +36,11 @@ sudo systemctl reboot
 
 ### Fresh bare metal / VM
 
-Note: Anaconda itself isn't part of the deployed appliance — zirconium only
-uses it in its own separate live/install media (built via `mkosi`), not in
-the `ghcr.io/zirconium-dev/zirconium:latest` image this Containerfile is
-`FROM`. So "install with Anaconda" here means building install *media* that
-boots into Anaconda pointed at this image, not running a tool that's already
-sitting on some pristine box. Two ways to do that:
+Note: Anaconda itself isn't part of the deployed appliance — it's not
+installed at all in `quay.io/fedora/fedora-bootc:44` or anything layered on
+top of it here. So "install with Anaconda" means building install *media*
+that boots into Anaconda pointed at this image, not running a tool that's
+already sitting on some pristine box. Two ways to do that:
 
 **Unattended, graphical progress (recommended)** — build an installer ISO
 with [`bootc-image-builder`](https://github.com/osbuild/bootc-image-builder).
@@ -102,11 +105,30 @@ kubectl get pods -n kubevirt
 for any user, console or terminal — no manual export needed.
 
 The appliance boots to a console (`multi-user.target`) by default even though
-the full zirconium desktop (Niri/DMS) is installed. Bring it up on demand:
+the Niri/DankMaterialShell desktop (see below) is fully installed. Bring it
+up on demand:
 
 ```sh
 sudo systemctl start graphical.target      # this boot only
 sudo systemctl set-default graphical.target  # persist across reboots
+```
+
+SSH is enabled by default (`sshd.service`), so the console/graphical choice
+doesn't actually gate remote access — you can always `ssh` in regardless of
+which target is active.
+
+## Using the desktop
+
+`graphical.target` brings up `greetd`, which shows DankMaterialShell's own
+greeter (login screen) and hands off into a Niri session running DMS as the
+shell — no GNOME/KDE anywhere in the stack. `alacritty` is installed as the
+default terminal (matches niri's own default `Mod+T` keybind). Niri looks
+for its config at `~/.config/niri/config.kdl`; if you don't have one yet,
+start from niri's own documented default:
+
+```sh
+mkdir -p ~/.config/niri
+cp /usr/share/doc/niri/default-config.kdl ~/.config/niri/config.kdl
 ```
 
 ## Deploying containers to K3s
@@ -155,7 +177,7 @@ from a registry.
 ## Running VMs in KubeVirt
 
 KubeVirt VMs are defined as `VirtualMachine` resources; `virtctl` (baked into
-`/usr/bin`, version pinned to match the deployed KubeVirt release) is the CLI
+`/usr/local/bin`, version pinned to match the deployed KubeVirt release) is the CLI
 for lifecycle/console/VNC operations. Only the core KubeVirt operator+CR are
 installed — not CDI (Containerized Data Importer) — so the straightforward
 way to get a disk image into a VM here is via **containerDisk**: package the
@@ -231,9 +253,10 @@ VM objects (which persist whether running or stopped).
 journalctl -u k3s.service
 journalctl -u kubevirt-bootstrap.service
 kubectl get pods -n kubevirt   # operator/virt-* components stuck/crashlooping
+journalctl -u greetd.service   # login screen / desktop not coming up
 ```
 
 SELinux is set to `permissive` at build time (K3s's CNI and KubeVirt's device
-plugin need more than the desktop policy allows) — this is a deliberate,
-persisted setting, not something to "fix" back to enforcing without also
-sorting out the required policy.
+plugin need more than the default targeted policy allows out of the box) —
+this is a deliberate, persisted setting, not something to "fix" back to
+enforcing without also sorting out the required policy.
