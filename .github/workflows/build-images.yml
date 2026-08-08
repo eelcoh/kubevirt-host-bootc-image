@@ -1,0 +1,74 @@
+name: Build and Push OS Images
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'base/**'
+      - 'kubevirt/**'
+      - 'desktops/**'
+      - 'niri-kubevirt/**'
+      - '.github/workflows/**'
+  schedule:
+    # Cron job to rebuild the whole image family every Sunday at 00:00 for
+    # the newest security updates.
+    - cron: '0 0 * * 0'
+  workflow_dispatch: # in order to be able to manually initiate the action
+
+# Every job runs on every trigger, in dependency order (base first, then
+# whatever FROMs it). This guarantees a flavor image is never built against
+# a stale published base/kubevirt image, at the cost of always rebuilding
+# all six images together — acceptable at this repo's size, and cache-from/
+# cache-to (see build-image.yml) keeps unchanged layers cheap.
+#
+#   base ─┬─→ kubevirt ─→ niri-kubevirt
+#         ├─→ desktops/sway
+#         ├─→ desktops/cosmic
+#         └─→ desktops/niri
+jobs:
+  base:
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: base
+      containerfile: base/Containerfile
+
+  kubevirt:
+    needs: base
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: kubevirt
+      containerfile: kubevirt/Containerfile
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/base:sha-${{ needs.base.outputs.short_sha }}
+
+  sway:
+    needs: base
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: sway
+      containerfile: desktops/sway/Containerfile
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/base:sha-${{ needs.base.outputs.short_sha }}
+
+  cosmic:
+    needs: base
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: cosmic
+      containerfile: desktops/cosmic/Containerfile
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/base:sha-${{ needs.base.outputs.short_sha }}
+
+  niri:
+    needs: base
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: niri
+      containerfile: desktops/niri/Containerfile
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/base:sha-${{ needs.base.outputs.short_sha }}
+
+  niri-kubevirt:
+    needs: kubevirt
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: niri-kubevirt
+      containerfile: niri-kubevirt/Containerfile
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/kubevirt:sha-${{ needs.kubevirt.outputs.short_sha }}

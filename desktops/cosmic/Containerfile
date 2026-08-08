@@ -1,0 +1,29 @@
+ARG BASE_IMAGE=ghcr.io/eelcoh/kubevirt-host-bootc-image/base:latest
+FROM ${BASE_IMAGE}
+
+# 1. Desktop: COSMIC (System76's Rust/Wayland desktop environment). Plain
+# Fedora 44 packages, no COPR — Fedora ships a full spin-quality comps group
+# for it (verified: `dnf group info cosmic-desktop` against this base),
+# unlike niri/sway which are assembled package-by-package here.
+#
+# cosmic-desktop's mandatory set (cosmic-edit/files/session/store/term) plus
+# its default set (cosmic-initial-setup, cosmic-player, flatpak,
+# gnome-keyring-pam, system-config-printer, toolbox) already pulls in the
+# compositor, panel, background manager, applets, etc. as dependencies —
+# there's no need to hand-pick those individually the way this image family
+# does for niri/sway.
+RUN dnf -y group install cosmic-desktop \
+    && dnf -y install \
+    cosmic-greeter \
+    xdg-desktop-portal-cosmic \
+    && dnf clean all
+
+# 2. Enable login. Unlike niri/sway, no manual wiring is needed at all:
+# cosmic-greeter's RPM ships its own sysusers.d entry (creates the
+# `cosmic-greeter` system user), tmpfiles.d, and an
+# /etc/greetd/cosmic-greeter.toml that already points at itself — verified
+# directly from the RPM. COSMIC's greeter is greetd-based under the hood:
+# cosmic-greeter.service just runs `greetd --config
+# /etc/greetd/cosmic-greeter.toml`, and (like plain greetd.service)
+# aliases display-manager.service, which graphical.target already wants.
+RUN systemctl enable cosmic-greeter.service

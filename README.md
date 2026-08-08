@@ -1,28 +1,42 @@
 # kubevirt-host-bootc-image
 
-A [bootc](https://containers.github.io/bootc/) (bootable container) image that
-turns a bare-metal or VM host into a single-box KubeVirt appliance: K3s as the
-Kubernetes control plane, KubeVirt for running VMs, KVM/libvirt for hardware
-virtualization, and a [Niri](https://github.com/niri-wm/niri) +
-[DankMaterialShell](https://danklinux.com/docs/dankmaterialshell/installation)
-desktop available on demand (no GNOME/KDE). Everything is baked into the
-image at build time — the box needs no network access on first boot to come
-up with a working cluster, and SSH (`sshd.service`) is enabled out of the
-box.
+A family of [bootc](https://containers.github.io/bootc/) (bootable container)
+OS images, all built from one common `base` and layered from there into more
+specialized flavors. Everything is baked into the image at build time — a
+box needs no network access on first boot to come up working, and SSH
+(`sshd.service`) is enabled out of the box on every flavor.
 
-See [`CLAUDE.md`](CLAUDE.md) for how the `Containerfile` itself is organized.
-This document is about *using* the appliance once it's installed.
+See [`CLAUDE.md`](CLAUDE.md) for how the Containerfiles themselves are
+organized and how the CI pipeline builds/publishes them. This document is
+about *using* the appliances once installed.
 
-Published image: `ghcr.io/eelcoh/kubevirt-host-bootc-image:latest`
+## Flavors
+
+| Image | What it is |
+|---|---|
+| `ghcr.io/eelcoh/kubevirt-host-bootc-image/base` | Plain Fedora bootc + KVM/libvirt (hardware virtualization). No desktop, no Kubernetes. |
+| `ghcr.io/eelcoh/kubevirt-host-bootc-image/kubevirt` | base + K3s (Kubernetes) + KubeVirt (VM workloads). The single-box KubeVirt appliance. |
+| `ghcr.io/eelcoh/kubevirt-host-bootc-image/niri` | base + [Niri](https://github.com/niri-wm/niri) + [DankMaterialShell](https://danklinux.com/docs/dankmaterialshell/installation) desktop. No Kubernetes. |
+| `ghcr.io/eelcoh/kubevirt-host-bootc-image/sway` | base + [Sway](https://swaywm.org/) desktop. No Kubernetes. |
+| `ghcr.io/eelcoh/kubevirt-host-bootc-image/cosmic` | base + [COSMIC](https://system76.com/cosmic/) desktop. No Kubernetes. |
+| `ghcr.io/eelcoh/kubevirt-host-bootc-image/niri-kubevirt` | kubevirt + the Niri/DMS desktop layered on top — the KubeVirt appliance *with* a desktop. |
+
+Pick whichever image matches what you want the box to be; the install and
+first-boot mechanics below are the same for all of them, just point them at
+a different image reference.
 
 ## Prerequisites
 
 - A CPU with hardware virtualization (Intel VT-x / AMD-V) and `/dev/kvm`
-  available — KubeVirt VMs run under emulation without it, which works but is
-  very slow.
+  available. Needed by every flavor (KVM/libvirt is in `base`); doubly so for
+  `kubevirt`/`niri-kubevirt`, where KubeVirt VMs run under emulation without
+  it, which works but is very slow.
 - For bare metal: BIOS/UEFI virtualization extensions enabled.
 
 ## Installing
+
+Replace `<image>` below with one of the flavor image references from the
+table above (e.g. `ghcr.io/eelcoh/kubevirt-host-bootc-image/kubevirt:latest`).
 
 ### Onto an existing bootc/Fedora system
 
@@ -30,9 +44,12 @@ If the target machine is already running a bootc-based OS (e.g. plain
 `fedora-bootc`), rebase it onto this image and reboot:
 
 ```sh
-sudo bootc switch ghcr.io/eelcoh/kubevirt-host-bootc-image:latest
+sudo bootc switch <image>
 sudo systemctl reboot
 ```
+
+This also works to move between flavors on a box you already installed (e.g.
+`base` → `kubevirt` once you decide you want KubeVirt after all).
 
 ### Fresh bare metal / VM
 
@@ -55,7 +72,7 @@ sudo podman run --rm -it --privileged \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   quay.io/centos-bootc/bootc-image-builder:latest \
   --type iso \
-  ghcr.io/eelcoh/kubevirt-host-bootc-image:latest
+  <image>
 ```
 
 Swap `--type iso` for `--type qcow2` or `--type raw` if you want a disk
@@ -76,7 +93,7 @@ keyboard us
 timezone UTC --utc
 rootpw --lock
 
-bootc --source-imgref=registry:ghcr.io/eelcoh/kubevirt-host-bootc-image:latest
+bootc --source-imgref=registry:<image>
 ```
 
 Host that kickstart somewhere reachable and boot the installer with
@@ -90,9 +107,14 @@ for details.
 
 ## First boot
 
-On first boot, `k3s.service` starts immediately (no network required — the
-binary is baked into the image), and `kubevirt-bootstrap.service` waits for
-the K3s API to come up and then applies the KubeVirt operator + CR pinned in
+Every flavor boots to a console (`multi-user.target`) by default, even the
+desktop ones (see below). SSH is enabled by default (`sshd.service`).
+
+### kubevirt / niri-kubevirt
+
+`k3s.service` starts immediately (no network required — the binary is baked
+into the image), and `kubevirt-bootstrap.service` waits for the K3s API to
+come up and then applies the KubeVirt operator + CR pinned in
 `/etc/kubevirt-version`. Give it a minute or two, then check:
 
 ```sh
@@ -104,20 +126,21 @@ kubectl get pods -n kubevirt
 `/etc/profile.d/k3s-kubeconfig.sh`, so `kubectl`/`virtctl` work out of the box
 for any user, console or terminal — no manual export needed.
 
-The appliance boots to a console (`multi-user.target`) by default even though
-the Niri/DankMaterialShell desktop (see below) is fully installed. Bring it
-up on demand:
+### Desktop flavors (niri, sway, cosmic, niri-kubevirt)
+
+Bring the desktop up on demand:
 
 ```sh
 sudo systemctl start graphical.target      # this boot only
 sudo systemctl set-default graphical.target  # persist across reboots
 ```
 
-SSH is enabled by default (`sshd.service`), so the console/graphical choice
-doesn't actually gate remote access — you can always `ssh` in regardless of
-which target is active.
+SSH stays available regardless of which target is active — the
+console/graphical choice doesn't gate remote access.
 
 ## Using the desktop
+
+### niri / niri-kubevirt
 
 `graphical.target` brings up `greetd`, which shows DankMaterialShell's own
 greeter (login screen) and hands off into a Niri session running DMS as the
@@ -131,7 +154,22 @@ mkdir -p ~/.config/niri
 cp /usr/share/doc/niri/default-config.kdl ~/.config/niri/config.kdl
 ```
 
+### sway
+
+`graphical.target` brings up `greetd`, which shows `tuigreet` (a console/TUI
+login prompt) and hands off into a Sway session. `waybar` runs as the status
+bar, and `alacritty` is the default terminal. Sway's stock config
+(`sway-config-fedora`) is used as-is; customize at `~/.config/sway/config`.
+
+### cosmic
+
+`graphical.target` brings up `cosmic-greeter`, COSMIC's own native login
+screen, straight into a COSMIC session — no manual greeter wiring involved,
+it's fully self-configured out of the box.
+
 ## Deploying containers to K3s
+
+*(kubevirt / niri-kubevirt only.)*
 
 This is a normal, single-node K3s cluster — anything that runs on Kubernetes
 runs here. `traefik` and `servicelb` are disabled (no ingress/LB needed on a
@@ -175,6 +213,8 @@ Then reference `local/myapp:dev` in your manifest with
 from a registry.
 
 ## Running VMs in KubeVirt
+
+*(kubevirt / niri-kubevirt only.)*
 
 KubeVirt VMs are defined as `VirtualMachine` resources; `virtctl` (baked into
 `/usr/local/bin`, version pinned to match the deployed KubeVirt release) is the CLI
@@ -250,13 +290,16 @@ VM objects (which persist whether running or stopped).
 ## Troubleshooting
 
 ```sh
-journalctl -u k3s.service
-journalctl -u kubevirt-bootstrap.service
-kubectl get pods -n kubevirt   # operator/virt-* components stuck/crashlooping
-journalctl -u greetd.service   # login screen / desktop not coming up
+journalctl -u k3s.service                # kubevirt / niri-kubevirt
+journalctl -u kubevirt-bootstrap.service # kubevirt / niri-kubevirt
+kubectl get pods -n kubevirt             # kubevirt / niri-kubevirt: operator/virt-* stuck/crashlooping
+journalctl -u greetd.service             # niri / sway / niri-kubevirt: login screen not coming up
+journalctl -u cosmic-greeter.service     # cosmic: login screen not coming up
 ```
 
-SELinux is set to `permissive` at build time (K3s's CNI and KubeVirt's device
-plugin need more than the default targeted policy allows out of the box) —
-this is a deliberate, persisted setting, not something to "fix" back to
-enforcing without also sorting out the required policy.
+SELinux is `enforcing` (Fedora's default) on `base` and every desktop-only
+flavor. It's set to `permissive` at build time only on `kubevirt` and
+`niri-kubevirt` (K3s's CNI and KubeVirt's device plugin need more than the
+default targeted policy allows out of the box) — a deliberate, persisted
+setting on those two flavors, not something to "fix" back to enforcing
+without also sorting out the required policy.
