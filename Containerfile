@@ -1,11 +1,31 @@
-FROM ghcr.io/zirconium-dev/zirconium:latest
-# FROM ghcr.io/eelcoh/zirconium-base:latest
-# FROM quay.io/fedora/fedora-bootc:44
+FROM quay.io/fedora/fedora-bootc:44
+# FROM ghcr.io/zirconium-dev/zirconium:latest
+# FROM quay.io/hummingbird-community/bootc-os:latest
 
-# 1. Boot minimal: zirconium enables a graphical target (Niri/DMS) by default.
-# We still ship the full desktop, but the appliance should come up headless;
-# switch to it on demand with `systemctl start graphical.target` (or
-# `systemctl set-default graphical.target` to make it persistent).
+# This rebuilds the appliance directly on plain fedora-bootc instead of the
+# zirconium base used previously (kept above, commented, for reference/
+# rollback). fedora-bootc:44 is already minimal (541 packages, no GNOME/
+# desktop of any kind, ~2GB) — it's the same base Silverblue/Kinoite/etc.
+# layer their desktops onto, so every desktop package below is added
+# explicitly by us, not inherited. Verified by pulling and inspecting the
+# image directly (`rpm -qa`, `ls /usr/local`, etc.) rather than assuming
+# from docs. Notably /usr/local is a real directory here (not an
+# ostree-style symlink into /var/usrlocal like some bases use), so unlike
+# the earlier zirconium-based attempt, no INSTALL_K3S_BIN_DIR workaround is
+# needed for K3s/virtctl to land where they normally would.
+#
+# quay.io/hummingbird-community/bootc-os (Fedora Hummingbird) was also
+# evaluated as an even-smaller base and rejected: it ships only 266 packages
+# from its own curated repo (no qemu-kvm/libvirt/niri/etc at all), and
+# layering Fedora Rawhide on top to fill the gap currently fails outright —
+# Rawhide has moved to OpenSSL 4.0 while Hummingbird pins patched OpenSSL
+# 3.5.6 builds, so core libs can't be resolved together. Its own image
+# description calls it "experimental," not meant as a general extensible
+# base the way fedora-bootc is.
+
+# 1. Boot headless (console), not graphical, even though a full desktop is
+# installed below. Bring it up on demand with `systemctl start
+# graphical.target` (or `systemctl set-default graphical.target` to persist).
 RUN systemctl set-default multi-user.target
 
 # 2. Install KVM, hardware virtualization tools, and system utility packages
@@ -19,25 +39,21 @@ RUN dnf -y install \
     && dnf clean all
 
 # 3. KubeVirt's device plugin and K3s's default CNI (flannel/vxlan) need more
-# than zirconium's desktop-oriented SELinux policy allows out of the box.
-# Set this at build time rather than at boot so it's a persisted, single
-# source of truth instead of a `setenforce 0` that has to be redone every boot.
+# than the default targeted SELinux policy allows out of the box. Set this at
+# build time rather than at boot so it's a persisted, single source of truth
+# instead of a `setenforce 0` that has to be redone every boot.
 RUN sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
 
 # 4. Install K3s directly into the image (no network needed on first boot).
 # --write-kubeconfig-mode=644 makes /etc/rancher/k3s/k3s.yaml world-readable:
 # fine for a single-user appliance, but note it grants cluster-admin to any
-# local user. servicelb/traefik are disabled since this is a single desktop
-# box, not a box that needs its own load balancer/ingress.
-# INSTALL_K3S_BIN_DIR=/usr/bin: zirconium (like stock ostree) ships /usr/local
-# as a symlink into /var/usrlocal, which doesn't exist yet at build time, so
-# the installer's default /usr/local/bin fails outright. /usr/bin is real,
-# non-/var image content, so it survives into the deployed system.
-# INSTALL_K3S_SKIP_ENABLE=true: the installer's own enable step also runs
+# local user. servicelb/traefik are disabled since this is a single box, not
+# one that needs its own load balancer/ingress.
+# INSTALL_K3S_SKIP_ENABLE=true: the installer's own enable step runs
 # `systemctl daemon-reload`, which (unlike plain `systemctl enable`) needs a
-# live systemd bus that doesn't exist during a container build and fails hard.
-# Step 7 below enables k3s.service itself once the unit file already exists.
-RUN curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_ENABLE=true INSTALL_K3S_BIN_DIR=/usr/bin sh -s - server \
+# live systemd bus that doesn't exist during a container build and fails
+# hard. Step 9 below enables k3s.service itself once the unit file exists.
+RUN curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_ENABLE=true sh -s - server \
     --disable=traefik \
     --disable=servicelb \
     --write-kubeconfig-mode=644
@@ -55,14 +71,12 @@ RUN KUBEVIRT_VERSION=$(curl -s https://storage.googleapis.com/kubevirt-prow/rele
     && echo "Found stable KubeVirt version: ${KUBEVIRT_VERSION}" \
     && curl -LO "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
     && chmod +x "virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
-    && mv "virtctl-${KUBEVIRT_VERSION}-linux-amd64" /usr/bin/virtctl \
+    && mv "virtctl-${KUBEVIRT_VERSION}-linux-amd64" /usr/local/bin/virtctl \
     && echo -n "${KUBEVIRT_VERSION}" > /etc/kubevirt-version
 
 # 6. Inject the automated initialization script: waits for K3s to come up,
 # then applies the KubeVirt operator + CR if not already deployed.
-# Lives under /usr/bin rather than /usr/local/bin for the same /var/usrlocal
-# reason as steps 4-5 above.
-COPY <<-'EOF' /usr/bin/bootstrap-kubevirt.sh
+COPY <<-'EOF' /usr/local/bin/bootstrap-kubevirt.sh
 #!/bin/bash
 set -e
 
@@ -81,10 +95,10 @@ fi
 
 echo "Appliance Initialization Complete!"
 EOF
-RUN chmod +x /usr/bin/bootstrap-kubevirt.sh
+RUN chmod +x /usr/local/bin/bootstrap-kubevirt.sh
 
-# 7. Define the one-shot systemd service that runs the bootstrap script, and
-# enable it plus K3s itself so both come up automatically on first boot.
+# 7. Define the one-shot systemd service that runs the bootstrap script.
+# Enabled together with k3s.service in step 9.
 COPY <<-'EOF' /usr/lib/systemd/system/kubevirt-bootstrap.service
 [Unit]
 Description=Automated Single-Box KubeVirt Bootstrapper
@@ -94,10 +108,80 @@ Requires=k3s.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/bin/bootstrap-kubevirt.sh
+ExecStart=/usr/local/bin/bootstrap-kubevirt.sh
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-RUN systemctl enable k3s.service kubevirt-bootstrap.service
+# 8. Desktop: Niri (scrollable-tiling Wayland compositor) + DankMaterialShell
+# (DMS, a Quickshell-based shell that replaces the usual pile of bar/
+# launcher/lock/notification daemons) — deliberately not GNOME/KDE/etc. All
+# of niri, quickshell and DankMaterialShell are plain Fedora 44 packages, no
+# COPR required (verified directly: `dnf search`/`dnf info` against this
+# base pulls them straight from the `fedora`/`updates` repos).
+#
+# - xdg-desktop-portal-gtk / -gnome + gnome-keyring + polkit-kde: niri's own
+#   upstream guidance (github.com/niri-wm/niri wiki, "Important Software")
+#   for portals (file chooser + screencast), secrets, and a polkit
+#   authentication agent. polkit-kde despite the name is a ~300KB standalone
+#   agent, not KDE/Plasma itself.
+# - alacritty: matches the terminal niri's own default-config.kdl binds to
+#   Mod+T out of the box, so the default keybind works unmodified.
+# - greetd: a generic greeter daemon; wired up to DMS's own bundled greeter
+#   in step 9, rather than a GNOME/KDE display manager.
+RUN dnf -y install \
+    niri \
+    DankMaterialShell \
+    alacritty \
+    xdg-desktop-portal \
+    xdg-desktop-portal-gtk \
+    xdg-desktop-portal-gnome \
+    gnome-keyring \
+    polkit-kde \
+    greetd \
+    pipewire \
+    pipewire-pulseaudio \
+    pipewire-alsa \
+    wireplumber \
+    google-noto-sans-fonts \
+    google-noto-emoji-fonts \
+    && dnf clean all
+
+# 9. Wire up login and first-user-session autostart, then enable everything
+# that should come up automatically.
+#
+# DankMaterialShell ships its own greetd-native greeter (the "dms-greeter"
+# script + matching niri/greetd config templates) under
+# /usr/share/quickshell/dms/Modules/Greetd/, but — unlike Arch/openSUSE/
+# Debian — Fedora doesn't yet package a separate `dms-greeter` RPM that does
+# this wiring automatically. This replicates DMS upstream's own documented
+# manual-install steps for that case (see DankMaterialShell's
+# Modules/Greetd/README.md "Manual (fallback only)" section) rather than
+# inventing a new install path: create the greeter system user, seed its
+# cache dir with the ownership/mode DMS's own tmpfiles rule uses
+# (/usr/share/quickshell/dms/systemd/tmpfiles-dms-greeter.conf), install the
+# dms-greeter wrapper, and point greetd's config.toml at it.
+#
+# For a real (non-greeter) login, DMS ships a proper systemd --user unit
+# (dms.service, WantedBy=graphical-session.target) that niri.service already
+# reaches on login — `--global` enables it for every user account up front,
+# no per-user `systemctl --user enable` step needed after first login.
+RUN groupadd -r greeter \
+    && useradd -r -g greeter -d /var/lib/greeter -s /bin/bash -c "System Greeter" greeter \
+    && mkdir -p /var/lib/greeter /var/cache/dms-greeter \
+    && chown greeter:greeter /var/lib/greeter /var/cache/dms-greeter \
+    && chmod 750 /var/cache/dms-greeter \
+    && install -m 0755 /usr/share/quickshell/dms/Modules/Greetd/assets/dms-greeter /usr/local/bin/dms-greeter
+
+COPY <<-'EOF' /etc/greetd/config.toml
+[terminal]
+vt = 1
+
+[default_session]
+user = "greeter"
+command = "/usr/local/bin/dms-greeter --command niri"
+EOF
+
+RUN systemctl --global enable dms.service \
+    && systemctl enable k3s.service kubevirt-bootstrap.service greetd.service sshd.service
