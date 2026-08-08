@@ -16,6 +16,14 @@ on:
     - cron: '0 0 * * 0'
   workflow_dispatch: # in order to be able to manually initiate the action
 
+# Sets the permission ceiling for every job below, including the reusable
+# build-image.yml calls — without this, GITHUB_TOKEN defaults to read-only
+# on packages and build-image.yml's own `packages: write` request is
+# rejected as exceeding what the caller is allowed to grant.
+permissions:
+  contents: read
+  packages: write
+
 # Every job runs on every trigger, in dependency order (base first, then
 # whatever FROMs it). This guarantees a flavor image is never built against
 # a stale published base/kubevirt image, at the cost of always rebuilding
