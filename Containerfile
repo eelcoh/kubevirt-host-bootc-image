@@ -183,5 +183,16 @@ user = "greeter"
 command = "/usr/local/bin/dms-greeter --command niri"
 EOF
 
+#
+# systemd-remount-fs.service is masked because it fails on every boot on
+# this composefs-based root (`fsconfig() failed: overlay: No changes
+# allowed in reconfigure` — the unit tries to reconfigure `/etc/fstab`
+# mount options onto the overlayfs root, which overlayfs doesn't support).
+# This is a known upstream issue on ostree/bootc composefs roots, not
+# specific to this image (see fedora-silverblue/issue-tracker#605,
+# bootc-dev/bootc#971). The unit is `static` (no [Install] section), so it
+# isn't started via a `.wants/` symlink `disable` could remove — masking is
+# the only way to actually stop it running.
 RUN systemctl --global enable dms.service \
-    && systemctl enable k3s.service kubevirt-bootstrap.service greetd.service sshd.service
+    && systemctl enable k3s.service kubevirt-bootstrap.service greetd.service sshd.service \
+    && systemctl mask systemd-remount-fs.service
