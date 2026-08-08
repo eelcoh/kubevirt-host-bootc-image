@@ -32,10 +32,18 @@ sudo systemctl reboot
 
 ### Fresh bare metal / VM
 
-For a machine with nothing installed yet, build a bootable disk image or ISO
-from the container image with
-[`bootc-image-builder`](https://github.com/osbuild/bootc-image-builder), then
-write it to disk/USB or boot it directly:
+Note: Anaconda itself isn't part of the deployed appliance — zirconium only
+uses it in its own separate live/install media (built via `mkosi`), not in
+the `ghcr.io/zirconium-dev/zirconium:latest` image this Containerfile is
+`FROM`. So "install with Anaconda" here means building install *media* that
+boots into Anaconda pointed at this image, not running a tool that's already
+sitting on some pristine box. Two ways to do that:
+
+**Unattended, graphical progress (recommended)** — build an installer ISO
+with [`bootc-image-builder`](https://github.com/osbuild/bootc-image-builder).
+This is itself an Anaconda-based ISO (osbuild wires up the kickstart for
+you), just unattended by default — boot it and it partitions/installs this
+image without prompting, showing normal Anaconda progress on screen:
 
 ```sh
 sudo podman run --rm -it --privileged \
@@ -43,12 +51,39 @@ sudo podman run --rm -it --privileged \
   -v ./output:/output \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   quay.io/centos-bootc/bootc-image-builder:latest \
-  --type qcow2 \
+  --type iso \
   ghcr.io/eelcoh/kubevirt-host-bootc-image:latest
 ```
 
-Swap `--type qcow2` for `--type iso` (installer ISO) or `--type raw` as
-needed. See the bootc-image-builder docs for the full set of output types.
+Swap `--type iso` for `--type qcow2` or `--type raw` if you want a disk
+image instead of installer media. See the bootc-image-builder docs for the
+full set of output types.
+
+**Scripted, via kickstart on a stock Fedora Anaconda ISO** — no custom image
+build needed; point any current Fedora Anaconda installer (netinst ISO, PXE,
+etc.) at this image with a kickstart using the `bootc` command:
+
+```
+zerombr
+clearpart --all --initlabel
+autopart
+
+lang en_US.UTF-8
+keyboard us
+timezone UTC --utc
+rootpw --lock
+
+bootc --source-imgref=registry:ghcr.io/eelcoh/kubevirt-host-bootc-image:latest
+```
+
+Host that kickstart somewhere reachable and boot the installer with
+`inst.ks=http://.../kubevirt-host.ks` on the kernel command line (or embed it
+in the ISO with `mkksiso`). This boots the normal Anaconda UI (graphical or
+text) and installs straight from the registry — useful if you already have
+PXE/kickstart infrastructure and don't want to build custom media per image
+update. See the [Fedora Magazine writeup of the `bootc` kickstart
+command](https://fedoramagazine.org/introducing-the-new-bootc-kickstart-command-in-anaconda/)
+for details.
 
 ## First boot
 
