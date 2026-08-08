@@ -29,7 +29,15 @@ RUN sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
 # fine for a single-user appliance, but note it grants cluster-admin to any
 # local user. servicelb/traefik are disabled since this is a single desktop
 # box, not a box that needs its own load balancer/ingress.
-RUN curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true sh -s - server \
+# INSTALL_K3S_BIN_DIR=/usr/bin: zirconium (like stock ostree) ships /usr/local
+# as a symlink into /var/usrlocal, which doesn't exist yet at build time, so
+# the installer's default /usr/local/bin fails outright. /usr/bin is real,
+# non-/var image content, so it survives into the deployed system.
+# INSTALL_K3S_SKIP_ENABLE=true: the installer's own enable step also runs
+# `systemctl daemon-reload`, which (unlike plain `systemctl enable`) needs a
+# live systemd bus that doesn't exist during a container build and fails hard.
+# Step 7 below enables k3s.service itself once the unit file already exists.
+RUN curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_ENABLE=true INSTALL_K3S_BIN_DIR=/usr/bin sh -s - server \
     --disable=traefik \
     --disable=servicelb \
     --write-kubeconfig-mode=644
@@ -47,13 +55,14 @@ RUN KUBEVIRT_VERSION=$(curl -s https://storage.googleapis.com/kubevirt-prow/rele
     && echo "Found stable KubeVirt version: ${KUBEVIRT_VERSION}" \
     && curl -LO "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
     && chmod +x "virtctl-${KUBEVIRT_VERSION}-linux-amd64" \
-    && mv "virtctl-${KUBEVIRT_VERSION}-linux-amd64" /usr/local/bin/virtctl \
+    && mv "virtctl-${KUBEVIRT_VERSION}-linux-amd64" /usr/bin/virtctl \
     && echo -n "${KUBEVIRT_VERSION}" > /etc/kubevirt-version
 
 # 6. Inject the automated initialization script: waits for K3s to come up,
 # then applies the KubeVirt operator + CR if not already deployed.
-RUN mkdir -p /usr/local/bin
-COPY <<-'EOF' /usr/local/bin/bootstrap-kubevirt.sh
+# Lives under /usr/bin rather than /usr/local/bin for the same /var/usrlocal
+# reason as steps 4-5 above.
+COPY <<-'EOF' /usr/bin/bootstrap-kubevirt.sh
 #!/bin/bash
 set -e
 
@@ -72,7 +81,7 @@ fi
 
 echo "Appliance Initialization Complete!"
 EOF
-RUN chmod +x /usr/local/bin/bootstrap-kubevirt.sh
+RUN chmod +x /usr/bin/bootstrap-kubevirt.sh
 
 # 7. Define the one-shot systemd service that runs the bootstrap script, and
 # enable it plus K3s itself so both come up automatically on first boot.
@@ -85,7 +94,7 @@ Requires=k3s.service
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/bootstrap-kubevirt.sh
+ExecStart=/usr/bin/bootstrap-kubevirt.sh
 
 [Install]
 WantedBy=multi-user.target
