@@ -53,6 +53,7 @@ Numbered steps, preserve the numbering when editing:
 1. `systemctl set-default multi-user.target` — boot to console, not graphical. Desktop flavors bring the desktop up on demand with `systemctl start graphical.target` (or `set-default graphical.target` to make it stick).
 2. Install KVM/virt packages via `dnf` (`qemu-kvm`, `libvirt`, `virt-install`, `iscsi-initiator-utils`, etc.) — lives in `base`, not just `kubevirt`, so every flavor gets host virtualization capability for free.
 3. Mask `systemd-remount-fs.service`. On this composefs-based root, `/` is an overlayfs mount, and this unit fails every boot trying to reconfigure it (`fsconfig() failed: overlay: No changes allowed in reconfigure`) — a known upstream issue on ostree/bootc composefs roots in general (`fedora-silverblue/issue-tracker#605`, `bootc-dev/bootc#971`), not specific to any one flavor. The unit is `static` (no `[Install]` section), so `systemctl disable` can't touch it — masking is the only way to stop it running. Also enables `sshd.service` (already on by default on this base; kept explicit for clarity).
+4. Install interactive dev tooling (`git`, `zsh`, `chezmoi`, `atuin`, `zoxide`, `htop`, `btop`, `distrobox`) — lives in `base` for the same reason step 2 does: every flavor gets it for free instead of duplicating it per flavor. `distrobox`'s `podman or docker` dependency is satisfied by the `podman` already shipped in `fedora-bootc:44`.
 
 SELinux is deliberately left at Fedora's default `enforcing` in `base` — libvirt/qemu-kvm work fine under the targeted policy. Only `kubevirt` (whose K3s CNI and KubeVirt's device plugin need more than targeted allows) flips it to `permissive`.
 
@@ -78,7 +79,7 @@ Each is `FROM` base, self-contained, no Kubernetes:
 
 All three: `alacritty` as the terminal (niri/sway; matches niri's default `Mod+T` keybind), `gnome-keyring` + `polkit-kde` (a ~300KB standalone polkit agent, not KDE/Plasma), and the PipeWire audio stack. All plain Fedora 44 packages, no COPR — verified directly against the live Fedora 44 repos, same practice as everything else in this repo.
 
-Every desktop's login front-end (`greetd`, `cosmic-greeter`) aliases `display-manager.service`, which `graphical.target` already `Wants=` — so `systemctl enable <front-end>.service` is sufficient to wire it up; nothing else needs to reference `display-manager.service` directly.
+Every desktop's login front-end (`greetd`, `cosmic-greeter`) aliases `display-manager.service`, which `graphical.target` already `Wants=` — so `systemctl enable <front-end>.service` is sufficient to wire it up; nothing else needs to reference `display-manager.service` directly. Each desktop flavor also does `systemctl set-default graphical.target` as its own final step, overriding `base`'s console default — without it the host stays on `multi-user.target` and the login front-end never runs at all, leaving the user stuck at a bare tty. For niri specifically this was also the root cause of DankMaterialShell appearing not to work: a user starting `niri` by hand from that tty bypasses greetd's `niri-session` → `niri.service` → `graphical-session.target` chain entirely, and `dms.service` (which is only pulled in via that chain) never starts, leaving a vanilla, unstyled niri session.
 
 ## niri-kubevirt/Containerfile
 

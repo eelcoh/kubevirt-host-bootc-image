@@ -54,3 +54,20 @@ RUN dnf -y install \
 # running.
 RUN systemctl mask systemd-remount-fs.service \
     && systemctl enable sshd.service
+
+# 3. Dev tooling for interactive use of the host, available on every flavor
+# for the same reason the KVM stack in step 2 is: added here once instead of
+# duplicated per flavor. All plain Fedora 44 packages, no COPR needed
+# (verified directly against the live Fedora 44 repos, same practice as
+# everything else in this repo). distrobox's `podman or docker` dependency
+# is satisfied by the podman already shipped in fedora-bootc:44 itself.
+RUN dnf -y install \
+    git \
+    zsh \
+    chezmoi \
+    atuin \
+    zoxide \
+    htop \
+    btop \
+    distrobox \
+    && dnf clean all

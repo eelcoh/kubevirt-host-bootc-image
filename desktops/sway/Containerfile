@@ -60,3 +60,9 @@ user = "greetd"
 EOF
 
 RUN systemctl enable greetd.service
+
+# 3. Boot straight to the greeter instead of `base`'s console default —
+# without this the host stays on `multi-user.target` and greetd never runs,
+# leaving the user stuck at a bare tty (see desktops/niri/Containerfile for
+# the fuller rationale, which applies identically here).
+RUN systemctl set-default graphical.target

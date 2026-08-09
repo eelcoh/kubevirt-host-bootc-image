@@ -72,3 +72,12 @@ EOF
 
 RUN systemctl --global enable dms.service \
     && systemctl enable greetd.service
+
+# 3. Boot straight to the greeter instead of `base`'s console default. Without
+# this, the host stays on `multi-user.target` and greetd/niri-session/DMS
+# never run at all — a user stuck at a bare tty who starts `niri` by hand
+# bypasses greetd's session wiring entirely and gets vanilla niri with no
+# DankMaterialShell, since dms.service (wanted by graphical-session.target)
+# is only pulled in via the niri-session -> niri.service -> graphical-session
+# .target chain that greetd's login triggers.
+RUN systemctl set-default graphical.target
