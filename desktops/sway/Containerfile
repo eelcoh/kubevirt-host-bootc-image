@@ -22,6 +22,9 @@ FROM ${BASE_IMAGE}
 #   as the niri flavor.
 # - greetd + tuigreet: a generic greeter daemon with a console/TUI login
 #   front-end.
+# - fedora-workstation-backgrounds: Fedora's own official wallpaper set
+#   (CC-BY-4.0), used for the default swaybg wallpaper wired up in step 2 —
+#   plain Fedora package, no custom art asset needed.
 RUN dnf -y install \
     sway \
     sway-config-fedora \
@@ -43,9 +46,463 @@ RUN dnf -y install \
     wireplumber \
     google-noto-sans-fonts \
     google-noto-emoji-fonts \
+    fedora-workstation-backgrounds \
     && dnf clean all
 
-# 2. Wire up login. Unlike the niri/DMS flavor, no manual system user needs
+# 2. Wallpaper. sway-config-fedora's /etc/sway/config includes every file
+# under /etc/sway/config.d/*.conf (see its own layered-include comment
+# there), so a wallpaper is wired up the same way as its own bindings/rules
+# snippets rather than by editing /etc/sway/config directly. swaybg (already
+# installed above) reads this via gdk-pixbuf2/glycin, which decodes .webp
+# fine (verified: glycin-image-rs, pulled in as swaybg's own dependency,
+# lists image/webp in its loader conf).
+COPY <<-'EOF' /etc/sway/config.d/40-wallpaper.conf
+output * bg /usr/share/backgrounds/fedora-workstation/mermaid_dark.webp fill
+EOF
+
+# 3. Themes. Four color themes for sway + waybar + alacritty, each as a
+# self-contained (sway.conf, waybar-style.css, alacritty.toml) triple under
+# /etc/sway/themes/<name>/. Matcha Green is activated as the system default
+# (client colors dropped into /etc/sway/config.d/ alongside step 2's
+# wallpaper snippet, waybar's default /etc/xdg/waybar/style.css replaced,
+# and alacritty's system-wide /etc/alacritty/alacritty.toml written) —
+# the other three themes ship as reference copies only; switch to one by
+# copying its three files over the active ones and running `swaymsg
+# reload` (sway/waybar pick this up live; a new alacritty window picks up
+# alacritty.toml automatically since it's read at window-open, not startup).
+#
+# - Nord: nordtheme.com's own published palette (nord0-nord15); the
+#   alacritty color mapping matches its widely-published alacritty port.
+# - Catppuccin: the Mocha (dark) variant of catppuccin.com's published
+#   palette; the alacritty mapping matches catppuccin/alacritty's own
+#   published Mocha theme.
+# - Matcha Green: an original vibrant-green-on-dark-gray palette built
+#   around #8BC34A, matching the issue's own "vibrant green and dark gray"
+#   description (not a literal port of any single upstream project).
+# - Chameleon Grove Green: sway/waybar colors are a direct port of
+#   cryinkfly/SwayWM-Themes' "Chameleon Grove Green" (openSUSE-palette
+#   inspired; matches this theme's own upstream description almost
+#   verbatim). That project doesn't ship an Alacritty config, so its
+#   alacritty.toml here extends the same green family to a full 16-color
+#   ANSI palette instead of porting one 1:1.
+RUN mkdir -p /etc/sway/themes/nord /etc/sway/themes/catppuccin \
+    /etc/sway/themes/matcha-green /etc/sway/themes/chameleon-grove-green
+
+COPY <<-'EOF' /etc/sway/themes/nord/sway.conf
+# Nord — https://www.nordtheme.com/
+# client.<class> <border> <background> <text> <indicator> <child_border>
+client.focused          #88C0D0 #2E3440 #ECEFF4 #88C0D0 #88C0D0
+client.focused_inactive #4C566A #3B4252 #D8DEE9 #4C566A #4C566A
+client.unfocused        #3B4252 #2E3440 #D8DEE9 #3B4252 #3B4252
+client.urgent            #BF616A #BF616A #ECEFF4 #BF616A #BF616A
+client.placeholder      #3B4252 #2E3440 #D8DEE9 #3B4252 #3B4252
+client.background       #2E3440
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/nord/waybar-style.css
+* {
+    font-family: 'Noto Sans Mono', 'Font Awesome 6 Free', 'Font Awesome 6 Brands', monospace;
+    font-size: 13px;
+}
+
+window#waybar {
+    background-color: rgba(46, 52, 64, 0.9);
+    border-bottom: 3px solid #4C566A;
+    color: #D8DEE9;
+}
+
+window#waybar.hidden { opacity: 0.2; }
+
+#workspaces button {
+    padding: 0 8px;
+    background-color: transparent;
+    color: #D8DEE9;
+    border-bottom: 3px solid transparent;
+}
+
+#workspaces button:hover { background-color: #3B4252; }
+
+#workspaces button.focused,
+#workspaces button.active {
+    color: #2E3440;
+    background-color: #88C0D0;
+    border-bottom: 3px solid #8FBCBB;
+}
+
+#workspaces button.urgent { background-color: #BF616A; color: #ECEFF4; }
+
+#mode { background-color: #5E81AC; color: #ECEFF4; padding: 0 10px; }
+
+#window, #workspaces { margin: 0 4px; }
+
+#clock, #battery, #cpu, #memory, #temperature, #backlight, #network,
+#pulseaudio, #tray, #idle_inhibitor, #scratchpad, #power-profiles-daemon,
+#language {
+    padding: 0 10px;
+    color: #D8DEE9;
+}
+
+#clock { background-color: #434C5E; }
+#cpu { background-color: #5E81AC; color: #ECEFF4; }
+#memory { background-color: #B48EAD; color: #2E3440; }
+#temperature { background-color: #D08770; color: #2E3440; }
+#temperature.critical { background-color: #BF616A; color: #ECEFF4; }
+#backlight { background-color: #81A1C1; color: #2E3440; }
+#network { background-color: #5E81AC; color: #ECEFF4; }
+#network.disconnected { background-color: #BF616A; color: #ECEFF4; }
+#pulseaudio { background-color: #EBCB8B; color: #2E3440; }
+#pulseaudio.muted { background-color: #4C566A; color: #D8DEE9; }
+#battery { background-color: #A3BE8C; color: #2E3440; }
+#battery.charging, #battery.plugged { background-color: #8FBCBB; color: #2E3440; }
+#battery.critical:not(.charging) { background-color: #BF616A; color: #ECEFF4; }
+#tray { background-color: #434C5E; }
+#idle_inhibitor { background-color: #434C5E; }
+#idle_inhibitor.activated { background-color: #88C0D0; color: #2E3440; }
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/nord/alacritty.toml
+[colors.primary]
+background = "#2E3440"
+foreground = "#D8DEE9"
+
+[colors.cursor]
+text = "#2E3440"
+cursor = "#D8DEE9"
+
+[colors.normal]
+black = "#3B4252"
+red = "#BF616A"
+green = "#A3BE8C"
+yellow = "#EBCB8B"
+blue = "#81A1C1"
+magenta = "#B48EAD"
+cyan = "#88C0D0"
+white = "#E5E9F0"
+
+[colors.bright]
+black = "#4C566A"
+red = "#BF616A"
+green = "#A3BE8C"
+yellow = "#EBCB8B"
+blue = "#81A1C1"
+magenta = "#B48EAD"
+cyan = "#8FBCBB"
+white = "#ECEFF4"
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/catppuccin/sway.conf
+# Catppuccin Mocha — https://catppuccin.com/palette
+# client.<class> <border> <background> <text> <indicator> <child_border>
+client.focused          #B4BEFE #1E1E2E #CDD6F4 #B4BEFE #B4BEFE
+client.focused_inactive #45475A #313244 #CDD6F4 #45475A #45475A
+client.unfocused        #313244 #1E1E2E #A6ADC8 #313244 #313244
+client.urgent            #F38BA8 #F38BA8 #1E1E2E #F38BA8 #F38BA8
+client.placeholder      #313244 #1E1E2E #A6ADC8 #313244 #313244
+client.background       #1E1E2E
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/catppuccin/waybar-style.css
+* {
+    font-family: 'Noto Sans Mono', 'Font Awesome 6 Free', 'Font Awesome 6 Brands', monospace;
+    font-size: 13px;
+}
+
+window#waybar {
+    background-color: rgba(30, 30, 46, 0.9);
+    border-bottom: 3px solid #181825;
+    color: #CDD6F4;
+}
+
+window#waybar.hidden { opacity: 0.2; }
+
+#workspaces button {
+    padding: 0 8px;
+    background-color: transparent;
+    color: #CDD6F4;
+    border-bottom: 3px solid transparent;
+}
+
+#workspaces button:hover { background-color: #313244; }
+
+#workspaces button.focused,
+#workspaces button.active {
+    color: #1E1E2E;
+    background-color: #B4BEFE;
+    border-bottom: 3px solid #89B4FA;
+}
+
+#workspaces button.urgent { background-color: #F38BA8; color: #1E1E2E; }
+
+#mode { background-color: #89B4FA; color: #1E1E2E; padding: 0 10px; }
+
+#window, #workspaces { margin: 0 4px; }
+
+#clock, #battery, #cpu, #memory, #temperature, #backlight, #network,
+#pulseaudio, #tray, #idle_inhibitor, #scratchpad, #power-profiles-daemon,
+#language {
+    padding: 0 10px;
+    color: #CDD6F4;
+}
+
+#clock { background-color: #313244; }
+#cpu { background-color: #89B4FA; color: #1E1E2E; }
+#memory { background-color: #CBA6F7; color: #1E1E2E; }
+#temperature { background-color: #FAB387; color: #1E1E2E; }
+#temperature.critical { background-color: #F38BA8; color: #1E1E2E; }
+#backlight { background-color: #B4BEFE; color: #1E1E2E; }
+#network { background-color: #89B4FA; color: #1E1E2E; }
+#network.disconnected { background-color: #F38BA8; color: #1E1E2E; }
+#pulseaudio { background-color: #F9E2AF; color: #1E1E2E; }
+#pulseaudio.muted { background-color: #45475A; color: #CDD6F4; }
+#battery { background-color: #A6E3A1; color: #1E1E2E; }
+#battery.charging, #battery.plugged { background-color: #94E2D5; color: #1E1E2E; }
+#battery.critical:not(.charging) { background-color: #F38BA8; color: #1E1E2E; }
+#tray { background-color: #313244; }
+#idle_inhibitor { background-color: #313244; }
+#idle_inhibitor.activated { background-color: #B4BEFE; color: #1E1E2E; }
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/catppuccin/alacritty.toml
+[colors.primary]
+background = "#1e1e2e"
+foreground = "#cdd6f4"
+
+[colors.cursor]
+text = "#1e1e2e"
+cursor = "#f5e0dc"
+
+[colors.normal]
+black = "#45475a"
+red = "#f38ba8"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+cyan = "#94e2d5"
+white = "#bac2de"
+
+[colors.bright]
+black = "#585b70"
+red = "#f38ba8"
+green = "#a6e3a1"
+yellow = "#f9e2af"
+blue = "#89b4fa"
+magenta = "#f5c2e7"
+cyan = "#94e2d5"
+white = "#a6adc8"
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/matcha-green/sway.conf
+# Matcha Green — vibrant green (#8BC34A) on dark gray.
+# client.<class> <border> <background> <text> <indicator> <child_border>
+client.focused          #8BC34A #1C1F1C #E8ECE6 #8BC34A #8BC34A
+client.focused_inactive #3A413A #262A26 #E8ECE6 #3A413A #3A413A
+client.unfocused        #262A26 #1C1F1C #A8B2A5 #262A26 #262A26
+client.urgent            #E05252 #E05252 #E8ECE6 #E05252 #E05252
+client.placeholder      #262A26 #1C1F1C #A8B2A5 #262A26 #262A26
+client.background       #1C1F1C
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/matcha-green/waybar-style.css
+* {
+    font-family: 'Noto Sans Mono', 'Font Awesome 6 Free', 'Font Awesome 6 Brands', monospace;
+    font-size: 13px;
+}
+
+window#waybar {
+    background-color: rgba(28, 31, 28, 0.9);
+    border-bottom: 3px solid #3A413A;
+    color: #E8ECE6;
+}
+
+window#waybar.hidden { opacity: 0.2; }
+
+#workspaces button {
+    padding: 0 8px;
+    background-color: transparent;
+    color: #E8ECE6;
+    border-bottom: 3px solid transparent;
+}
+
+#workspaces button:hover { background-color: #262A26; }
+
+#workspaces button.focused,
+#workspaces button.active {
+    color: #1C1F1C;
+    background-color: #8BC34A;
+    border-bottom: 3px solid #6FBFA0;
+}
+
+#workspaces button.urgent { background-color: #E05252; color: #E8ECE6; }
+
+#mode { background-color: #6FBFA0; color: #1C1F1C; padding: 0 10px; }
+
+#window, #workspaces { margin: 0 4px; }
+
+#clock, #battery, #cpu, #memory, #temperature, #backlight, #network,
+#pulseaudio, #tray, #idle_inhibitor, #scratchpad, #power-profiles-daemon,
+#language {
+    padding: 0 10px;
+    color: #E8ECE6;
+}
+
+#clock { background-color: #3A413A; }
+#cpu { background-color: #6FBFA0; color: #1C1F1C; }
+#memory { background-color: #5C9EAD; color: #1C1F1C; }
+#temperature { background-color: #D4A017; color: #1C1F1C; }
+#temperature.critical { background-color: #E05252; color: #E8ECE6; }
+#backlight { background-color: #8BC34A; color: #1C1F1C; }
+#network { background-color: #6FBFA0; color: #1C1F1C; }
+#network.disconnected { background-color: #E05252; color: #E8ECE6; }
+#pulseaudio { background-color: #D4B106; color: #1C1F1C; }
+#pulseaudio.muted { background-color: #262A26; color: #E8ECE6; }
+#battery { background-color: #8BC34A; color: #1C1F1C; }
+#battery.charging, #battery.plugged { background-color: #6FBFA0; color: #1C1F1C; }
+#battery.critical:not(.charging) { background-color: #E05252; color: #E8ECE6; }
+#tray { background-color: #3A413A; }
+#idle_inhibitor { background-color: #3A413A; }
+#idle_inhibitor.activated { background-color: #8BC34A; color: #1C1F1C; }
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/matcha-green/alacritty.toml
+[colors.primary]
+background = "#1C1F1C"
+foreground = "#E8ECE6"
+
+[colors.cursor]
+text = "#1C1F1C"
+cursor = "#8BC34A"
+
+[colors.normal]
+black = "#262A26"
+red = "#E05252"
+green = "#8BC34A"
+yellow = "#D4B106"
+blue = "#5C9EAD"
+magenta = "#A98BC3"
+cyan = "#6FBFA0"
+white = "#A8B2A5"
+
+[colors.bright]
+black = "#3A413A"
+red = "#E87A7A"
+green = "#A6D96A"
+yellow = "#E6C94D"
+blue = "#7FB6C4"
+magenta = "#C1A6D9"
+cyan = "#8FD4B8"
+white = "#E8ECE6"
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/chameleon-grove-green/sway.conf
+# Chameleon Grove Green — ported from cryinkfly/SwayWM-Themes
+# (themes/chameleon-grove-green), openSUSE-palette inspired.
+# client.<class> <border> <background> <text> <indicator> <child_border>
+client.focused          #57886C #334D3F #FFFFFF #57886C #334D3F
+client.focused_inactive #334D3F #1A2A22 #CCCCCC #445C4E #1A2A22
+client.unfocused        #2A3B33 #1A2A22 #AAAAAA #3B5B4C #1A2A22
+client.urgent            #78BFA1 #445C4E #FFFFFF #78BFA1 #334D3F
+client.placeholder      #445C4E #1A2A22 #AAAAAA #445C4E #1A2A22
+client.background       #1A2A22
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/chameleon-grove-green/waybar-style.css
+* {
+    font-family: 'Noto Sans Mono', 'Font Awesome 6 Free', 'Font Awesome 6 Brands', monospace;
+    font-size: 13px;
+}
+
+window#waybar {
+    background-color: rgba(16, 36, 22, 0.85);
+    border-bottom: 3px solid rgba(16, 36, 22, 0.9);
+    color: #FFFFFF;
+}
+
+window#waybar.hidden { opacity: 0.2; }
+
+#workspaces button {
+    padding: 0 8px;
+    background-color: transparent;
+    color: #FFFFFF;
+    border-bottom: 3px solid transparent;
+}
+
+#workspaces button:hover { background-color: #0E1C14; }
+
+#workspaces button.focused,
+#workspaces button.active {
+    color: #FFFFFF;
+    background-color: #162D20;
+    border-bottom: 3px solid #78BFA1;
+}
+
+#workspaces button.urgent { background-color: #BF6157; color: #FFFFFF; }
+
+#mode { background-color: #3E8E41; color: #FFFFFF; padding: 0 10px; }
+
+#window, #workspaces { margin: 0 4px; }
+
+#clock, #battery, #cpu, #memory, #temperature, #backlight, #network,
+#pulseaudio, #tray, #idle_inhibitor, #scratchpad, #power-profiles-daemon,
+#language {
+    padding: 0 10px;
+    color: #FFFFFF;
+}
+
+#clock { background-color: #334D3F; }
+#cpu { background-color: #3E8E41; color: #FFFFFF; }
+#memory { background-color: #57886C; color: #FFFFFF; }
+#temperature { background-color: #78BFA1; color: #162D20; }
+#temperature.critical { background-color: #BF6157; color: #FFFFFF; }
+#backlight { background-color: #57886C; color: #FFFFFF; }
+#network { background-color: #3E8E41; color: #FFFFFF; }
+#network.disconnected { background-color: #BF6157; color: #FFFFFF; }
+#pulseaudio { background-color: #78BFA1; color: #162D20; }
+#pulseaudio.muted { background-color: #334D3F; color: #FFFFFF; }
+#battery { background-color: #56C56B; color: #162D20; }
+#battery.charging, #battery.plugged { background-color: #78BFA1; color: #162D20; }
+#battery.critical:not(.charging) { background-color: #BF6157; color: #FFFFFF; }
+#tray { background-color: #334D3F; }
+#idle_inhibitor { background-color: #334D3F; }
+#idle_inhibitor.activated { background-color: #3E8E41; color: #FFFFFF; }
+EOF
+
+COPY <<-'EOF' /etc/sway/themes/chameleon-grove-green/alacritty.toml
+[colors.primary]
+background = "#1A2A22"
+foreground = "#FFFFFF"
+
+[colors.cursor]
+text = "#1A2A22"
+cursor = "#78BFA1"
+
+[colors.normal]
+black = "#1A2A22"
+red = "#BF6157"
+green = "#57886C"
+yellow = "#D0A770"
+blue = "#5E8DAC"
+magenta = "#8E6EAD"
+cyan = "#78BFA1"
+white = "#CCCCCC"
+
+[colors.bright]
+black = "#334D3F"
+red = "#E08A80"
+green = "#78BFA1"
+yellow = "#EBCB8B"
+blue = "#81A1C1"
+magenta = "#B48EAD"
+cyan = "#9BE0C6"
+white = "#FFFFFF"
+EOF
+
+RUN mkdir -p /etc/alacritty \
+    && cp /etc/sway/themes/matcha-green/sway.conf /etc/sway/config.d/20-theme.conf \
+    && cp /etc/sway/themes/matcha-green/waybar-style.css /etc/xdg/waybar/style.css \
+    && cp /etc/sway/themes/matcha-green/alacritty.toml /etc/alacritty/alacritty.toml
+
+# 4. Wire up login. Unlike the niri/DMS flavor, no manual system user needs
 # to be created here: Fedora's `greetd` package already ships a sysusers.d
 # entry that creates a `greetd` system user (home /var/lib/greetd) — verified
 # directly from the RPM — so tuigreet (the greeter front-end) just runs as
@@ -61,7 +518,7 @@ EOF
 
 RUN systemctl enable greetd.service
 
-# 3. Boot straight to the greeter instead of `base`'s console default —
+# 5. Boot straight to the greeter instead of `base`'s console default —
 # without this the host stays on `multi-user.target` and greetd never runs,
 # leaving the user stuck at a bare tty (see desktops/niri/Containerfile for
 # the fuller rationale, which applies identically here).

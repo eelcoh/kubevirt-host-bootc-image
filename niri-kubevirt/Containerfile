@@ -30,6 +30,13 @@ FROM ${BASE_IMAGE}
 #   fuzzel/swaylock are left alone: they're only reachable via niri's default
 #   keybinds, not auto-started, so they're harmless clutter rather than a
 #   visible bug.
+# - swaybg + fedora-workstation-backgrounds: DMS has its own wallpaper
+#   module, but it stores the chosen path in per-user session state that
+#   starts out empty, so nothing renders until a user picks one by hand.
+#   swaybg (spawned in step 2 below) paints Fedora's own official wallpaper
+#   art (CC-BY-4.0) as a layer-shell background underneath it instead, so
+#   the session isn't blank out of the box; DMS's own wallpaper module still
+#   takes over the moment a user sets one.
 RUN dnf -y install \
     --exclude=waybar \
     niri \
@@ -47,6 +54,8 @@ RUN dnf -y install \
     wireplumber \
     google-noto-sans-fonts \
     google-noto-emoji-fonts \
+    swaybg \
+    fedora-workstation-backgrounds \
     && dnf clean all
 
 # 2. Generate /etc/niri/config.kdl from niri's own shipped default, with
@@ -63,7 +72,9 @@ RUN dnf -y install \
 # from it over time.
 RUN mkdir -p /etc/niri \
     && sed -e '/This line starts waybar/d' -e '/^spawn-at-startup "waybar"$/d' \
-    /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl
+    /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl \
+    && printf '\nspawn-at-startup "swaybg" "-i" "/usr/share/backgrounds/fedora-workstation/mermaid_dark.webp" "-m" "fill"\n' \
+    >> /etc/niri/config.kdl
 
 # 3. Wire up login and first-user-session autostart, then enable everything
 # that should come up automatically.
