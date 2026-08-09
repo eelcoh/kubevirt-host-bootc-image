@@ -27,3 +27,10 @@ RUN dnf -y group install cosmic-desktop \
 # /etc/greetd/cosmic-greeter.toml`, and (like plain greetd.service)
 # aliases display-manager.service, which graphical.target already wants.
 RUN systemctl enable cosmic-greeter.service
+
+# 3. Boot straight to the greeter instead of `base`'s console default —
+# without this the host stays on `multi-user.target` and cosmic-greeter
+# never runs, leaving the user stuck at a bare tty (see
+# desktops/niri/Containerfile for the fuller rationale, which applies
+# identically here).
+RUN systemctl set-default graphical.target
