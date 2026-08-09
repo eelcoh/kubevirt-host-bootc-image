@@ -16,9 +16,34 @@ RUN dnf -y group install cosmic-desktop \
     && dnf -y install \
     cosmic-greeter \
     xdg-desktop-portal-cosmic \
+    fedora-workstation-backgrounds \
     && dnf clean all
 
-# 2. Enable login. Unlike niri/sway, no manual wiring is needed at all:
+# 2. Wallpaper. cosmic-bg's RPM already ships its own vendor-default config
+# at /usr/share/cosmic/com.system76.CosmicBackground/v1/all pointing at
+# Fedora's stock default-dark.jxl. cosmic-config (the RON-based settings
+# store every COSMIC component uses) layers config in this order: per-user
+# ~/.config/cosmic (highest) > admin override /etc/xdg/cosmic > vendor
+# default /usr/share/cosmic (lowest) — verified directly (`strings
+# /usr/bin/cosmic-bg` references /etc/xdg). Writing an /etc/xdg/cosmic
+# override rather than editing the RPM-owned /usr/share/cosmic file swaps in
+# Fedora's other official wallpaper set (fedora-workstation-backgrounds,
+# installed above) without touching a package-managed file, and still
+# leaves a user's own ~/.config/cosmic choice free to take precedence.
+RUN mkdir -p /etc/xdg/cosmic/com.system76.CosmicBackground/v1
+COPY <<-'EOF' /etc/xdg/cosmic/com.system76.CosmicBackground/v1/all
+(
+    output: "all",
+    source: Path("/usr/share/backgrounds/fedora-workstation/mermaid_dark.webp"),
+    filter_by_theme: true,
+    rotation_frequency: 3600,
+    filter_method: Lanczos,
+    scaling_mode: Zoom,
+    sampling_method: Alphanumeric,
+)
+EOF
+
+# 3. Enable login. Unlike niri/sway, no manual wiring is needed at all:
 # cosmic-greeter's RPM ships its own sysusers.d entry (creates the
 # `cosmic-greeter` system user), tmpfiles.d, and an
 # /etc/greetd/cosmic-greeter.toml that already points at itself — verified
@@ -28,7 +53,7 @@ RUN dnf -y group install cosmic-desktop \
 # aliases display-manager.service, which graphical.target already wants.
 RUN systemctl enable cosmic-greeter.service
 
-# 3. Boot straight to the greeter instead of `base`'s console default —
+# 4. Boot straight to the greeter instead of `base`'s console default —
 # without this the host stays on `multi-user.target` and cosmic-greeter
 # never runs, leaving the user stuck at a bare tty (see
 # desktops/niri/Containerfile for the fuller rationale, which applies
