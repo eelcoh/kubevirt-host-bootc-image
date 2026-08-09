@@ -79,7 +79,15 @@ vt = 1
 
 [default_session]
 user = "greeter"
-command = "/usr/local/bin/dms-greeter --command niri"
+# --path dms: dms-greeter defaults to looking for its QML shell under a
+# config named "dms-greeter" (.../quickshell/dms-greeter/shell.qml) — the
+# convention upstream's own git-clone-based manual install uses. Fedora's
+# DankMaterialShell RPM doesn't ship a copy under that name; it only
+# installs the real shell at /usr/share/quickshell/dms/shell.qml. Without
+# this flag, dms-greeter's locate_dms_config lookup fails and it exits
+# immediately (greetd logs this as "greeter exited without creating a
+# session"), so point it at the config Fedora actually installs instead.
+command = "/usr/local/bin/dms-greeter --command niri --path dms"
 EOF
 
 RUN systemctl --global enable dms.service \
