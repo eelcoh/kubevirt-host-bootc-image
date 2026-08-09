@@ -61,6 +61,12 @@ RUN systemctl mask systemd-remount-fs.service \
 # (verified directly against the live Fedora 44 repos, same practice as
 # everything else in this repo). distrobox's `podman or docker` dependency
 # is satisfied by the podman already shipped in fedora-bootc:44 itself.
+# zsh is made the standard interactive shell: root's login shell is switched
+# to it, and /etc/default/useradd's SHELL is repointed so any human account
+# created afterwards (e.g. via `useradd`) also gets zsh instead of Fedora's
+# bash default. Service accounts created by individual flavors (e.g. the
+# `greeter` system user in the niri Containerfiles) are unaffected — they set
+# their own explicit `-s` and stay on bash intentionally.
 RUN dnf -y install \
     git \
     zsh \
@@ -70,4 +76,6 @@ RUN dnf -y install \
     htop \
     btop \
     distrobox \
-    && dnf clean all
+    && dnf clean all \
+    && usermod --shell /usr/bin/zsh root \
+    && useradd -D -s /usr/bin/zsh
