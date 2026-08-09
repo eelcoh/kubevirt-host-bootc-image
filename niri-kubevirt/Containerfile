@@ -22,8 +22,16 @@ FROM ${BASE_IMAGE}
 # - alacritty: matches the terminal niri's own default-config.kdl binds to
 #   Mod+T out of the box, so the default keybind works unmodified.
 # - greetd: a generic greeter daemon; wired up to DMS's own bundled greeter
-#   in step 2, rather than a GNOME/KDE display manager.
+#   in step 3, rather than a GNOME/KDE display manager.
+# - --exclude=waybar: niri's own RPM `Recommends: waybar` (also fuzzel,
+#   swaylock), which dnf pulls in by default. DMS already replaces waybar's
+#   role with its own DankBar — installing both means the DMS-less waybar
+#   ends up on top of the desktop (see step 2 for why it would actually run).
+#   fuzzel/swaylock are left alone: they're only reachable via niri's default
+#   keybinds, not auto-started, so they're harmless clutter rather than a
+#   visible bug.
 RUN dnf -y install \
+    --exclude=waybar \
     niri \
     DankMaterialShell \
     alacritty \
@@ -41,7 +49,23 @@ RUN dnf -y install \
     google-noto-emoji-fonts \
     && dnf clean all
 
-# 2. Wire up login and first-user-session autostart, then enable everything
+# 2. Generate /etc/niri/config.kdl from niri's own shipped default, with
+# just its `spawn-at-startup "waybar"` line stripped.
+#
+# We never ship a config for the real logged-in user, and niri's config
+# search order (XDG_CONFIG_HOME/niri/config.kdl -> ~/.config/niri/config.kdl
+# -> /etc/niri/config.kdl -> its own compiled-in default) means it was
+# falling all the way through to that compiled-in default — which spawns
+# waybar at startup regardless of whether the package is even installed.
+# Deriving from niri's own /usr/share/doc/niri/default-config.kdl (rather
+# than hand-copying it into this Containerfile) keeps this in sync with
+# whatever default Fedora's niri build actually ships, instead of drifting
+# from it over time.
+RUN mkdir -p /etc/niri \
+    && sed -e '/This line starts waybar/d' -e '/^spawn-at-startup "waybar"$/d' \
+    /usr/share/doc/niri/default-config.kdl > /etc/niri/config.kdl
+
+# 3. Wire up login and first-user-session autostart, then enable everything
 # that should come up automatically.
 #
 # DankMaterialShell ships its own greetd-native greeter (the "dms-greeter"
@@ -93,7 +117,7 @@ EOF
 RUN systemctl --global enable dms.service \
     && systemctl enable greetd.service
 
-# 3. Boot straight to the greeter instead of `base`'s console default. Without
+# 4. Boot straight to the greeter instead of `base`'s console default. Without
 # this, the host stays on `multi-user.target` and greetd/niri-session/DMS
 # never run at all — a user stuck at a bare tty who starts `niri` by hand
 # bypasses greetd's session wiring entirely and gets vanilla niri with no
