@@ -45,20 +45,26 @@ RUN dnf -y install \
 # this wiring automatically. This replicates DMS upstream's own documented
 # manual-install steps for that case (see DankMaterialShell's
 # Modules/Greetd/README.md "Manual (fallback only)" section) rather than
-# inventing a new install path: create the greeter system user, seed its
-# cache dir with the ownership/mode DMS's own tmpfiles rule uses
-# (/usr/share/quickshell/dms/systemd/tmpfiles-dms-greeter.conf), install the
+# inventing a new install path: create the greeter system user, install the
 # dms-greeter wrapper, and point greetd's config.toml at it.
 #
-# For a real (non-greeter) login, DMS ships a proper systemd --user unit
-# (dms.service, WantedBy=graphical-session.target) that niri.service already
-# reaches on login — `--global` enables it for every user account up front,
-# no per-user `systemctl --user enable` step needed after first login.
+# Crucially, the greeter's runtime dirs (/var/lib/greeter, /var/cache/
+# dms-greeter) are NOT created with a build-time `mkdir` — bootc treats
+# content placed under /var in the image like a Docker `VOLUME /var`: it's
+# only unpacked from the *initial* image a host is installed from, and is
+# never re-synced on later updates/rebases (see bootc's filesystem docs).
+# A `mkdir` here would just silently stop taking effect the moment this
+# image is rebuilt and the host upgrades to the new build, at which point
+# dms-greeter's own `[[ ! -d "$CACHE_DIR" ]]` check starts failing on every
+# launch, greetd crash-loops past its StartLimitBurst, and greetd.service
+# itself ends up "failed" (exactly the boot failure this was hitting).
+# Instead, install DMS's own tmpfiles.d snippet — it already ships one for
+# this exact pair of directories — into /usr/lib/tmpfiles.d, which (being
+# under /usr) is reapplied by systemd-tmpfiles on every boot regardless of
+# whether this is a first install or an upgrade.
 RUN groupadd -r greeter \
     && useradd -r -g greeter -d /var/lib/greeter -s /bin/bash -c "System Greeter" greeter \
-    && mkdir -p /var/lib/greeter /var/cache/dms-greeter \
-    && chown greeter:greeter /var/lib/greeter /var/cache/dms-greeter \
-    && chmod 750 /var/cache/dms-greeter \
+    && install -m 0644 /usr/share/quickshell/dms/systemd/tmpfiles-dms-greeter.conf /usr/lib/tmpfiles.d/dms-greeter.conf \
     && install -m 0755 /usr/share/quickshell/dms/Modules/Greetd/assets/dms-greeter /usr/local/bin/dms-greeter
 
 COPY <<-'EOF' /etc/greetd/config.toml
