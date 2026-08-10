@@ -66,18 +66,71 @@ you), just unattended by default — boot it and it partitions/installs this
 image without prompting, showing normal Anaconda progress on screen:
 
 ```sh
+cat > config.toml <<'EOF'
+[[customizations.user]]
+name = "youruser"
+password = "yourpassword"
+groups = ["wheel"]
+EOF
+
 sudo podman run --rm -it --privileged \
   --pull=newer \
+  --security-opt label=type:unconfined_t \
+  -v ./config.toml:/config.toml:ro \
   -v ./output:/output \
   -v /var/lib/containers/storage:/var/lib/containers/storage \
   quay.io/centos-bootc/bootc-image-builder:latest \
   --type iso \
+  --rootfs ext4 \
   <image>
+```
+
+`--rootfs` is required here: `bootc-image-builder` normally reads the root
+filesystem type from `/usr/lib/bootc/install.toml` baked into the image, but
+plain `quay.io/fedora/fedora-bootc:44` (what `base/Containerfile` builds
+from) doesn't ship that file, so every flavor here needs it passed
+explicitly or the build fails with `no default root filesystem type
+specified in container`. `ext4` is Fedora's conventional bootc choice
+(RHEL/CentOS bootc images default to `xfs` instead) — swap it for `xfs` or
+`btrfs` if you want a different one.
+
+`config.toml` is also required: none of the images in this repo create a
+login user or set a root password on their own (see `base/Containerfile`),
+so without a `[[customizations.user]]` block the unattended install
+completes with a system nothing can log into — SSH is enabled but there's no
+account to authenticate as. Add `key = "ssh-..."` to the user block instead
+of/alongside `password` to authorize an SSH key.
+
+**Hostname is not settable this way.** `bootc-image-builder`'s `--type
+iso`/`anaconda-iso` path never writes a hostname into the kickstart it
+generates — confirmed by reading its source (`legacy_iso.go` builds the
+kickstart via `kickstart.New()`, whose `Options` struct has no `Hostname`
+field at all), so neither a hostname typed into Anaconda's network spoke nor
+a `hostname = "..."` line in `config.toml` (blueprint's `GetHostname()` is
+only wired up for the disk-image types — `qcow2`/`raw`/etc — not this one)
+ends up on the installed system. Since `/etc/hostname` is left effectively
+empty, systemd's fallback kicks in at boot: it reads `DEFAULT_HOSTNAME` from
+`/usr/lib/os-release`, which is `"fedora"` in `quay.io/fedora/fedora-bootc:44`
+(verified directly) — hence every flavor here installs as `fedora`
+regardless of what you set during the install. This isn't specific to this
+repo's base image; it bit the earlier zirconium-based iteration the same
+way, since zirconium is Fedora-derived too. Set a real hostname after first
+boot instead:
+
+```sh
+sudo hostnamectl set-hostname mybox
 ```
 
 Swap `--type iso` for `--type qcow2` or `--type raw` if you want a disk
 image instead of installer media. See the bootc-image-builder docs for the
 full set of output types.
+
+[`scripts/make-installer-usb.sh`](scripts/make-installer-usb.sh) automates
+the ISO build above and writes the result straight to a USB stick:
+
+```sh
+sudo scripts/make-installer-usb.sh -d /dev/sdb
+```
 
 **Scripted, via kickstart on a stock Fedora Anaconda ISO** — no custom image
 build needed; point any current Fedora Anaconda installer (netinst ISO, PXE,
