@@ -7,9 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A family of [bootc](https://containers.github.io/bootc/) (bootable container) OS images, all built from a common `base` image and layered from there into more specialized flavors:
 
 - **base** — plain Fedora bootc + KVM/libvirt (hardware virtualization) + a couple of generic bootc/ostree fixes. No desktop, no Kubernetes.
-- **kubevirt** — base + K3s (Kubernetes control plane) + KubeVirt (VM workloads). Turns the host into a single-box KubeVirt appliance.
+- **k3s** — base + K3s (Kubernetes control plane), nothing layered on top of it yet. Shared by every flavor below that needs a cluster, so K3s is installed exactly once instead of duplicated per flavor.
+- **kubevirt** — k3s + KubeVirt (VM workloads). Turns the host into a single-box KubeVirt appliance.
 - **desktops/niri**, **desktops/sway**, **desktops/cosmic** — base + one desktop environment each, no Kubernetes. Niri+DankMaterialShell, Sway, and COSMIC respectively.
 - **niri-kubevirt** — kubevirt + the niri desktop layered on top. The original single-image goal of this repo, now expressed as kubevirt + niri composed together.
+- **agent-runtime** — k3s + a first-boot deploy of [Agent Substrate](https://github.com/agent-substrate/substrate)'s control plane onto the built-in K3s, for hosting agent workloads at scale. No desktop.
 
 There is no application code — the entire project is the image definitions plus the CI pipeline that builds and publishes each of them.
 
@@ -17,13 +19,15 @@ There is no application code — the entire project is the image definitions plu
 
 ```
 base/Containerfile                   # shared by everything below
-kubevirt/Containerfile               # FROM base
+k3s/Containerfile                    # FROM base; shared by kubevirt and agent-runtime
+kubevirt/Containerfile               # FROM k3s
 desktops/niri/Containerfile          # FROM base
 desktops/sway/Containerfile          # FROM base
 desktops/cosmic/Containerfile        # FROM base
 niri-kubevirt/Containerfile          # FROM kubevirt
+agent-runtime/Containerfile          # FROM k3s
 .github/workflows/build-image.yml    # reusable workflow: builds+pushes one flavor
-.github/workflows/build-images.yml   # orchestrator: 6 jobs, one per flavor, in dependency order
+.github/workflows/build-images.yml   # orchestrator: 8 jobs, one per flavor, in dependency order
 ```
 
 Every non-base Containerfile starts with:
@@ -57,17 +61,23 @@ Numbered steps, preserve the numbering when editing:
 
 SELinux is deliberately left at Fedora's default `enforcing` in `base` — libvirt/qemu-kvm work fine under the targeted policy. Only `kubevirt` (whose K3s CNI and KubeVirt's device plugin need more than targeted allows) flips it to `permissive`.
 
+## k3s/Containerfile
+
+`FROM` base. Holds exactly the K3s install steps that used to live in `kubevirt/Containerfile`, extracted so `kubevirt` and `agent-runtime` can both build on a shared Kubernetes layer instead of each installing K3s themselves:
+
+1. Flip `/etc/selinux/config` to `SELINUX=permissive` at build time (a persisted single source of truth, not a per-boot `setenforce`). K3s's default CNI (flannel/vxlan) and the workloads layered on top (KubeVirt's device plugin, Agent Substrate's sandboxed actors) need more than the default targeted policy allows.
+2. Install K3s straight into the image via `curl https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_ENABLE=true sh -s - server ...` (`--disable=traefik --disable=servicelb --write-kubeconfig-mode=644`), so the binary + systemd unit are baked in and first boot needs no network. `INSTALL_K3S_SKIP_START=true` avoids trying to actually start the service during the container build. `INSTALL_K3S_SKIP_ENABLE=true` skips the installer's own `systemctl enable`/`daemon-reload` — the latter needs a live systemd bus that doesn't exist during a container build and fails hard (unlike plain `systemctl enable`, which works offline); step 3 enables `k3s.service` itself once the unit file already exists. Also drops `/etc/profile.d/k3s-kubeconfig.sh` so any shell has `KUBECONFIG` set without the user exporting it manually.
+3. `systemctl enable k3s.service`.
+
 ## kubevirt/Containerfile
 
-`FROM` base, numbered steps continue the same convention:
+`FROM` k3s, numbered steps continue the same convention:
 
-1. Flip `/etc/selinux/config` to `SELINUX=permissive` at build time (a persisted single source of truth, not a per-boot `setenforce`).
-2. Install K3s straight into the image via `curl https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_ENABLE=true sh -s - server ...` (`--disable=traefik --disable=servicelb --write-kubeconfig-mode=644`), so the binary + systemd unit are baked in and first boot needs no network. `INSTALL_K3S_SKIP_START=true` avoids trying to actually start the service during the container build. `INSTALL_K3S_SKIP_ENABLE=true` skips the installer's own `systemctl enable`/`daemon-reload` — the latter needs a live systemd bus that doesn't exist during a container build and fails hard (unlike plain `systemctl enable`, which works offline); step 5 enables `k3s.service` itself once the unit file already exists. Also drops `/etc/profile.d/k3s-kubeconfig.sh` so any shell has `KUBECONFIG` set without the user exporting it manually.
-3. Fetch the current stable KubeVirt release tag, install `virtctl` to `/usr/local/bin`, and write that resolved version to `/etc/kubevirt-version` — the single source of truth step 4 reads from, so the manifests deployed at first boot always match the `virtctl` baked into the image.
-4. Heredoc-inject `/usr/local/bin/bootstrap-kubevirt.sh`, a first-boot script that waits for the (already-running, systemd-managed) K3s API to come up, then applies the KubeVirt operator + CR from `/etc/kubevirt-version` if the `kubevirt` namespace doesn't already exist. Also injects the `kubevirt-bootstrap.service` systemd oneshot unit (`After=`/`Requires=k3s.service`) that runs it.
-5. `systemctl enable k3s.service kubevirt-bootstrap.service`.
+1. Fetch the current stable KubeVirt release tag, install `virtctl` to `/usr/local/bin`, and write that resolved version to `/etc/kubevirt-version` — the single source of truth step 2 reads from, so the manifests deployed at first boot always match the `virtctl` baked into the image.
+2. Heredoc-inject `/usr/local/bin/bootstrap-kubevirt.sh`, a first-boot script that waits for the (already-running, systemd-managed) K3s API to come up, then applies the KubeVirt operator + CR from `/etc/kubevirt-version` if the `kubevirt` namespace doesn't already exist. Also injects the `kubevirt-bootstrap.service` systemd oneshot unit (`After=`/`Requires=k3s.service`) that runs it.
+3. `systemctl enable kubevirt-bootstrap.service` (`k3s.service` itself is already enabled by the k3s base layer).
 
-Version pinning is intentionally build-time-only: nothing at runtime scrapes GitHub/DNS for "latest" — `/etc/kubevirt-version` (baked in step 3) is the only thing step 4's script trusts, so a given built image always deploys a consistent, known KubeVirt version regardless of what's "latest" by the time it boots.
+Version pinning is intentionally build-time-only: nothing at runtime scrapes GitHub/DNS for "latest" — `/etc/kubevirt-version` (baked in step 1) is the only thing step 2's script trusts, so a given built image always deploys a consistent, known KubeVirt version regardless of what's "latest" by the time it boots.
 
 ## Desktop flavors (desktops/niri, desktops/sway, desktops/cosmic)
 
@@ -95,6 +105,22 @@ All three desktops install `fedora-workstation-backgrounds` (Fedora's own offici
 
 Nord and Catppuccin use their respective projects' own officially published palettes (nordtheme.com; catppuccin.com's Mocha variant), including their widely-published Alacritty color mappings. Chameleon Grove Green's sway/waybar colors are ported directly from `cryinkfly/SwayWM-Themes`' theme of the same name (its own description is an near-verbatim match for this repo's issue that requested it); that project ships no Alacritty config, so its `alacritty.toml` here extends the same green family to a full 16-color ANSI palette rather than porting one 1:1. Matcha Green is an original palette built around `#8BC34A` on dark gray — not a literal port of any single upstream project, since none of the sources checked for the other three themes ship one under that name.
 
+## agent-runtime/Containerfile
+
+`FROM` k3s. Does a first-boot deploy of [Agent Substrate](https://github.com/agent-substrate/substrate)'s control plane onto the built-in K3s. No desktop.
+
+Google's [`ax`](https://github.com/google/ax) (Agent Executor) was evaluated and deliberately left out. AX-the-runtime (event log, resumption, distributed scheduling) is genuinely provider-agnostic by its own description, but the only harness it ships today is Antigravity — Google's own coding-agent product, wired specifically to Gemini (AI Studio) or Vertex AI (verified directly in `google/ax`'s `internal/config/config.go` and `internal/harness/antigravity`). Bringing a non-Google harness means implementing their `HarnessService` interface yourself; none ships out of the box, and "support for more frontier harnesses besides Antigravity" is on their own roadmap, not shipped. That makes `ax` as released unusable without a Google AI credential, defeating the point of a general-purpose agent runtime image. Agent Substrate itself has no such dependency — it's a Kubernetes-level scheduler/sandbox layer, agnostic of what actually runs inside its actors (its own docs list LangChain, MCP servers, and Claude Code as compatible) — so only Substrate's control plane is deployed here.
+
+Agent Substrate is explicitly "early development, no backward-compatibility guarantees" (verified directly against the repo) and ships no pre-built binaries or versioned release artifact beyond source tags — it's built from source here, pinned to a specific tag via the `SUBSTRATE_VERSION` build arg rather than "latest", for the same reason KubeVirt's version is pinned in `kubevirt/Containerfile`.
+
+1. Install `golang` and `docker-distribution`. Go is needed because Agent Substrate ships no prebuilt binaries. `docker-distribution` is a local, anonymous (no-auth) OCI registry: Agent Substrate's own install script builds its control-plane images with `ko` and pushes them somewhere, and there's no published pre-built release to `kubectl apply` the way KubeVirt has — this appliance has no external registry to point at, so it runs one itself.
+2. `git clone --branch ${SUBSTRATE_VERSION} --depth 1` Agent Substrate into `/opt/agent-substrate`. Its own `hack/` scripts manage their own pinned build of `ko` via Go's tool-directive mechanism (`go tool`, see `hack/run-tool.sh`) — nothing to separately install for that, it resolves from this clone's `go.mod` on first use (needs network the first time, same as KubeVirt's bootstrap needing network to fetch manifests).
+3. Write `/etc/rancher/k3s/registries.yaml`, pointing K3s's containerd at `localhost:5000` (the registry from step 1) as a plain-HTTP mirror, so images `ko` pushes there can actually be pulled by the cluster. This works because single-node K3s runs containerd on the same host as the registry — "localhost" means the same machine for both the push and the pull. Wouldn't hold for a multi-node cluster, but this appliance is always one node.
+4. Heredoc-inject `/usr/local/bin/bootstrap-agent-substrate.sh`, a first-boot script that waits for K3s and the local registry to come up, then runs Agent Substrate's own `hack/install-ate.sh --deploy-ate-system` (against `KO_DOCKER_REPO=localhost:5000/ate`) if the `ate-system` namespace doesn't already exist. Also injects the `agent-substrate-bootstrap.service` systemd oneshot unit (`After=`/`Requires=k3s.service docker-distribution.service`, `TimeoutStartSec=0` since `ko` builds plus per-component rollout waits routinely exceed systemd's default 90s unit-start timeout).
+5. `systemctl enable docker-distribution.service agent-substrate-bootstrap.service` (`k3s.service` itself is already enabled by the k3s base layer).
+
+Unlike `kubevirt`, this control plane comes up fully automatically with no external credentials needed — deploying actual agent workloads onto it (ActorTemplates/WorkerPools) is a "bring your own harness" step left to the user, per Agent Substrate's own framework-agnostic design.
+
 ## niri-kubevirt/Containerfile
 
 `FROM` the `kubevirt` image (not the reverse — desktop is layered on top of the Kubernetes appliance, not the other way around). Intentionally duplicates `desktops/niri/Containerfile`'s desktop steps verbatim rather than sharing them through an include mechanism, matching this repo's convention of self-contained, heredoc-style Containerfiles with no cross-file includes anywhere else in the project. **If the niri desktop steps change, update both files together.**
@@ -103,10 +129,11 @@ Nord and Catppuccin use their respective projects' own officially published pale
 
 `build-image.yml` is a reusable workflow (`workflow_call`) that builds and pushes exactly one flavor: given `flavor` (image path suffix), `containerfile` (path), and optional `build_args`, it computes a short SHA, builds with buildx, and pushes `ghcr.io/<repo>/<flavor>:latest` and `:sha-<short>` — tags and cache (`type=gha`, scoped per flavor so the six builds don't clobber each other's cache) all live here.
 
-`build-images.yml` is the orchestrator: same triggers as before (push to `main` touching `base/**`, `kubevirt/**`, `desktops/**`, `niri-kubevirt/**`, or the workflows themselves; weekly Sunday cron for security updates; manual `workflow_dispatch`). It calls `build-image.yml` once per flavor with `needs:` encoding the dependency DAG:
+`build-images.yml` is the orchestrator: same triggers as before (push to `main` touching `base/**`, `k3s/**`, `kubevirt/**`, `desktops/**`, `niri-kubevirt/**`, `agent-runtime/**`, or the workflows themselves; weekly Sunday cron for security updates; manual `workflow_dispatch`). It calls `build-image.yml` once per flavor with `needs:` encoding the dependency DAG:
 
 ```
-base ──┬─→ kubevirt ─→ niri-kubevirt
+base ──┬─→ k3s ──┬─→ kubevirt ─→ niri-kubevirt
+       │         └─→ agent-runtime
        ├─→ desktops/sway
        ├─→ desktops/cosmic
        └─→ desktops/niri
@@ -121,7 +148,9 @@ This is the source of truth for how the images are built and published; mirror a
 - There is no build/lint/test tooling in-repo beyond the Containerfiles themselves. To validate a change, build the relevant image locally, e.g.:
   ```sh
   podman build -f base/Containerfile -t local/base:dev .
-  podman build -f kubevirt/Containerfile --build-arg BASE_IMAGE=local/base:dev -t local/kubevirt:dev .
+  podman build -f k3s/Containerfile --build-arg BASE_IMAGE=local/base:dev -t local/k3s:dev .
+  podman build -f kubevirt/Containerfile --build-arg BASE_IMAGE=local/k3s:dev -t local/kubevirt:dev .
+  podman build -f agent-runtime/Containerfile --build-arg BASE_IMAGE=local/k3s:dev -t local/agent-runtime:dev .
   podman build -f desktops/niri/Containerfile --build-arg BASE_IMAGE=local/base:dev -t local/niri:dev .
   ```
   bootc images require a container runtime capable of building OCI images; there's no Kubernetes/VM available to test the first-boot bootstrap script or greeter flows short of actually booting the image.

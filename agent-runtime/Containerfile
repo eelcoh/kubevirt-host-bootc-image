@@ -1,0 +1,115 @@
+ARG BASE_IMAGE=ghcr.io/eelcoh/kubevirt-host-bootc-image/k3s:latest
+FROM ${BASE_IMAGE}
+
+# Google's ax (Agent Executor, https://github.com/google/ax) was evaluated
+# and deliberately left out of this image. AX-the-runtime (event log,
+# resumption, distributed scheduling) is genuinely provider-agnostic by its
+# own description, but the only harness it ships today is Antigravity —
+# Google's own coding-agent product, wired specifically to Gemini (AI
+# Studio) or Vertex AI (verified directly in google/ax's
+# internal/config/config.go and internal/harness/antigravity). Bringing a
+# non-Google harness means implementing their HarnessService interface
+# yourself; none ships out of the box, and "support for more frontier
+# harnesses besides Antigravity" is on their own roadmap, not shipped. That
+# makes `ax` as released unusable without a Google AI credential, which
+# defeats the point of a general-purpose agent runtime image. Agent
+# Substrate itself has no such dependency — it's a Kubernetes-level
+# scheduler/sandbox layer, agnostic of what actually runs inside its actors
+# (its own docs list LangChain, MCP servers, and Claude Code as compatible)
+# — so only Substrate's control plane is deployed here.
+
+ARG SUBSTRATE_VERSION=v0.0.0
+
+# 1. Install packages needed to build and run Agent Substrate's control
+# plane. Agent Substrate ships as Go source with no pre-built binaries
+# (verified directly — the repo publishes no release artifacts beyond
+# source tags), so this flavor needs a Go toolchain, unlike kubevirt which
+# only needs a single downloaded binary (virtctl). docker-distribution is a
+# local, anonymous (no-auth) OCI registry: Agent Substrate's own install
+# script builds its control-plane images with `ko` and pushes them
+# somewhere, and there's no published pre-built release to `kubectl apply`
+# the way KubeVirt has — this appliance has no external registry to point
+# at, so it runs one itself.
+RUN dnf -y install \
+    golang \
+    docker-distribution \
+    && dnf clean all
+
+# 2. Clone Agent Substrate at the pinned tag. Its own `hack/` scripts manage
+# their own pinned build of `ko` via Go's tool-directive mechanism (`go
+# tool`, see hack/run-tool.sh) — nothing to separately install for that, it
+# resolves from this clone's go.mod on first use (needs network the first
+# time, same as KubeVirt's bootstrap needing network to fetch manifests).
+RUN git clone --branch "${SUBSTRATE_VERSION}" --depth 1 \
+    https://github.com/agent-substrate/substrate /opt/agent-substrate \
+    && echo -n "${SUBSTRATE_VERSION}" > /etc/agent-substrate-version
+
+# 3. Point K3s's containerd at the local registry (step 1) as a plain-HTTP
+# mirror, so images `ko` pushes to localhost:5000 can actually be pulled by
+# the cluster. Single-node K3s runs containerd on the same host as the
+# registry, so "localhost" here correctly means the same machine for both
+# the push (from the bootstrap script) and the pull (from containerd) — this
+# isn't true for multi-node clusters, but this appliance is always one node.
+COPY <<-'EOF' /etc/rancher/k3s/registries.yaml
+mirrors:
+  "localhost:5000":
+    endpoint:
+      - "http://localhost:5000"
+EOF
+
+# 4. Inject the automated initialization script: waits for K3s and the local
+# registry to come up, then deploys the Agent Substrate control plane
+# (ate-system: CRDs, api-server, atenet-router, valkey) if not already
+# present.
+COPY <<-'EOF' /usr/local/bin/bootstrap-agent-substrate.sh
+#!/bin/bash
+set -e
+
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+until kubectl get nodes >/dev/null 2>&1; do
+    echo "Waiting for local K3s node status..."
+    sleep 3
+done
+
+until curl -sf http://localhost:5000/v2/ >/dev/null 2>&1; do
+    echo "Waiting for local container registry..."
+    sleep 2
+done
+
+if ! kubectl get namespace ate-system >/dev/null 2>&1; then
+    echo "Deploying Agent Substrate control plane ($(cat /etc/agent-substrate-version))..."
+    export KO_DOCKER_REPO=localhost:5000/ate
+    cd /opt/agent-substrate
+    ./hack/install-ate.sh --deploy-ate-system
+fi
+
+echo "Agent Substrate control plane ready. Deploy your own actors on it via"
+echo "ActorTemplates/WorkerPools/SandboxConfigs — see"
+echo "https://github.com/agent-substrate/substrate/tree/main/demos for"
+echo "worked examples (framework-agnostic: LangChain, MCP servers, or any"
+echo "other OCI-packaged agent harness)."
+EOF
+RUN chmod +x /usr/local/bin/bootstrap-agent-substrate.sh
+
+COPY <<-'EOF' /usr/lib/systemd/system/agent-substrate-bootstrap.service
+[Unit]
+Description=Automated Single-Box Agent Substrate Bootstrapper
+After=k3s.service docker-distribution.service
+Requires=k3s.service docker-distribution.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# ko building/pushing the control-plane images plus per-component rollout
+# waits (up to 120s each) routinely exceeds systemd's default 90s unit
+# start timeout; disable it rather than tune a number that'll go stale.
+TimeoutStartSec=0
+ExecStart=/usr/local/bin/bootstrap-agent-substrate.sh
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 5. Enable everything that should come up automatically. k3s.service itself
+# is already enabled by the k3s base layer.
+RUN systemctl enable docker-distribution.service agent-substrate-bootstrap.service
