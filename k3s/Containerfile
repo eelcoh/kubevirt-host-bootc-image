@@ -1,0 +1,37 @@
+ARG BASE_IMAGE=ghcr.io/eelcoh/kubevirt-host-bootc-image/base:latest
+FROM ${BASE_IMAGE}
+
+# 1. K3s's default CNI (flannel/vxlan) and the workloads flavors built on top
+# of this layer run (KubeVirt's device plugin, Agent Substrate's sandboxed
+# actors) need more than the default targeted SELinux policy allows out of
+# the box. Set this at build time rather than at boot so it's a persisted,
+# single source of truth instead of a `setenforce 0` that has to be redone
+# every boot. The base image itself stays at Fedora's default enforcing
+# policy — libvirt/qemu-kvm work fine under it — this layer is the one that
+# actually needs permissive.
+RUN sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+
+# 2. Install K3s directly into the image (no network needed on first boot).
+# --write-kubeconfig-mode=644 makes /etc/rancher/k3s/k3s.yaml world-readable:
+# fine for a single-user appliance, but note it grants cluster-admin to any
+# local user. servicelb/traefik are disabled since this is a single box, not
+# one that needs its own load balancer/ingress.
+# INSTALL_K3S_SKIP_ENABLE=true: the installer's own enable step runs
+# `systemctl daemon-reload`, which (unlike plain `systemctl enable`) needs a
+# live systemd bus that doesn't exist during a container build and fails
+# hard. Step 3 below enables k3s.service itself once the unit file exists.
+RUN curl -sfL https://get.k3s.io | INSTALL_K3S_SKIP_START=true INSTALL_K3S_SKIP_ENABLE=true sh -s - server \
+    --disable=traefik \
+    --disable=servicelb \
+    --write-kubeconfig-mode=644
+
+# Make kubectl (and k3s's bundled kubectl) usable from any interactive shell,
+# console or graphical terminal, without the user having to export KUBECONFIG.
+COPY <<-'EOF' /etc/profile.d/k3s-kubeconfig.sh
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+EOF
+
+# 3. Enable K3s so it comes up automatically. Flavors built on top of this
+# layer (kubevirt, agent-runtime) add their own bootstrap services that
+# depend on k3s.service.
+RUN systemctl enable k3s.service

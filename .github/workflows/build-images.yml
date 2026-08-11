@@ -6,9 +6,11 @@ on:
       - main
     paths:
       - 'base/**'
+      - 'k3s/**'
       - 'kubevirt/**'
       - 'desktops/**'
       - 'niri-kubevirt/**'
+      - 'agent-runtime/**'
       - '.github/workflows/**'
   schedule:
     # Cron job to rebuild the whole image family every Sunday at 00:00 for
@@ -26,14 +28,15 @@ permissions:
 
 # Every job runs on every trigger, in dependency order (base first, then
 # whatever FROMs it). This guarantees a flavor image is never built against
-# a stale published base/kubevirt image, at the cost of always rebuilding
-# all six images together — acceptable at this repo's size, and cache-from/
-# cache-to (see build-image.yml) keeps unchanged layers cheap.
+# a stale published parent image, at the cost of always rebuilding all
+# images together — acceptable at this repo's size, and cache-from/cache-to
+# (see build-image.yml) keeps unchanged layers cheap.
 #
-#   base ─┬─→ kubevirt ─→ niri-kubevirt
-#         ├─→ desktops/sway
-#         ├─→ desktops/cosmic
-#         └─→ desktops/niri
+#   base ──┬─→ k3s ──┬─→ kubevirt ─→ niri-kubevirt
+#          │         └─→ agent-runtime
+#          ├─→ desktops/sway
+#          ├─→ desktops/cosmic
+#          └─→ desktops/niri
 jobs:
   base:
     uses: ./.github/workflows/build-image.yml
@@ -41,13 +44,29 @@ jobs:
       flavor: base
       containerfile: base/Containerfile
 
-  kubevirt:
+  k3s:
     needs: base
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: k3s
+      containerfile: k3s/Containerfile
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/base:sha-${{ needs.base.outputs.short_sha }}
+
+  kubevirt:
+    needs: k3s
     uses: ./.github/workflows/build-image.yml
     with:
       flavor: kubevirt
       containerfile: kubevirt/Containerfile
-      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/base:sha-${{ needs.base.outputs.short_sha }}
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/k3s:sha-${{ needs.k3s.outputs.short_sha }}
+
+  agent-runtime:
+    needs: k3s
+    uses: ./.github/workflows/build-image.yml
+    with:
+      flavor: agent-runtime
+      containerfile: agent-runtime/Containerfile
+      build_args: BASE_IMAGE=ghcr.io/${{ github.repository }}/k3s:sha-${{ needs.k3s.outputs.short_sha }}
 
   sway:
     needs: base
